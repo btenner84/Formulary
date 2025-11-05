@@ -47,9 +47,11 @@ drug_lookup.log
 *.parquet
 *.csv
 *.zip
-*.txt
 !requirements.txt
 !runtime.txt
+# Don't ignore important data files
+!webapp/static/drug_names.json
+# PDFs
 *.pdf
 
 # Local development
