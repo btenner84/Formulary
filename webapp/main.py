@@ -2,25 +2,31 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse
+from pathlib import Path
+from typing import Optional
 import duckdb
 import pandas as pd
 import os
-from pathlib import Path
-from typing import Optional
 
 app = FastAPI(title="Medicare Part D Intelligence Platform")
 
-# Mount static files and templates
-app.mount("/static", StaticFiles(directory="webapp/static"), name="static")
-templates = Jinja2Templates(directory="webapp/templates")
+# Get the base directory (works both locally and on Railway)
+BASE_DIR = Path(__file__).parent.parent
+WEBAPP_DIR = Path(__file__).parent
+
+# Mount static files and templates with dynamic paths
+static_dir = WEBAPP_DIR / "static" if (WEBAPP_DIR / "static").exists() else BASE_DIR / "webapp" / "static"
+templates_dir = WEBAPP_DIR / "templates" if (WEBAPP_DIR / "templates").exists() else BASE_DIR / "webapp" / "templates"
+
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+templates = Jinja2Templates(directory=str(templates_dir))
 
 # S3 Configuration
 S3_BUCKET = os.getenv("S3_BUCKET", "formulary2026")
 S3_PREFIX = os.getenv("S3_PREFIX", "medicare_parquet")
 USE_S3 = os.getenv("USE_S3", "true").lower() == "true"
 
-# Local fallback
-BASE_DIR = Path(__file__).parent.parent
+# Local fallback (BASE_DIR already defined above)
 LOCAL_DATA_DIR = BASE_DIR / "medicare_parquet"
 
 def get_db(year: str = "2025"):
