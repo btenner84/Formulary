@@ -101,19 +101,12 @@ def get_db(year: str = "2025"):
     except Exception as e:
         print(f"Note: contract_organizations.parquet not loaded: {e}")
     
-    # Load plan enrollment data from CSV (use 2025 enrollment for both years until 2026 data available)
+    # Load plan enrollment data from Parquet (use 2025 enrollment for both years until 2026 data available)
     try:
         if USE_S3:
             conn.execute(f"""
                 CREATE VIEW plan_enrollment AS 
-                SELECT 
-                    "Contract Number" as contract_number,
-                    "Plan ID" as plan_id,
-                    "Parent Organization" as parent_organization,
-                    "Organization Marketing Name" as organization_marketing_name,
-                    "Plan Name" as plan_name,
-                    TRY_CAST("Enrollment" AS INTEGER) as enrollment
-                FROM read_csv_auto('s3://{S3_BUCKET}/2025/plan_enrollment.csv', ignore_errors=true)
+                SELECT * FROM read_parquet('s3://{S3_BUCKET}/2025/plan_enrollment.parquet')
             """)
             print(f"✅ Loaded 2025 enrollment data (using for {year} year)")
     except Exception as e:
