@@ -274,6 +274,10 @@ async def get_all_plans(year: str = "2025"):
         LIMIT 100
     """).fetchdf()
     
+    # Replace NaN with None for JSON serialization
+    result = result.fillna({'total_enrollment': 0, 'plan_count': 0, 'contract_count': 0, 'formulary_count': 0})
+    result = result.where(result.notna(), None)
+    
     return result.to_dict(orient='records')
 
 @app.get("/api/organization/{org_name:path}/plans")
@@ -307,6 +311,10 @@ async def get_organization_plans(org_name: str, year: str = "2025"):
             p.formulary_id
         ORDER BY pe.enrollment DESC
     """).fetchdf()
+    
+    # Replace NaN with None for JSON serialization
+    result = result.fillna({'enrollment': 0, 'state_count': 0})
+    result = result.where(result.notna(), None)
     
     return result.to_dict(orient='records')
 
