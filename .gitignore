@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+webapp.log
+streamlit.log
+pricing_conversion.log
+drug_lookup.log
+
+# Data files (don't commit large data)
+*.parquet
+*.csv
+*.zip
+*.txt
+!requirements.txt
+!runtime.txt
+*.pdf
+
+# Local development
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+

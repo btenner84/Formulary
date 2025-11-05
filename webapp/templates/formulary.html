@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Formulary Detail - Medicare Part D Intelligence</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">
+            💊 Medicare Part D <span>Intelligence</span>
+        </a>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Breadcrumb -->
+        <div class="breadcrumb" id="breadcrumb" style="display: none;">
+            <a href="/" class="breadcrumb-link">Home</a>
+            <span class="breadcrumb-separator">›</span>
+            <a href="#" class="breadcrumb-link" id="contractLink">Contract</a>
+            <span class="breadcrumb-separator">›</span>
+            <span class="breadcrumb-current">Formulary {{ formulary_id }}</span>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="loading">
+            <div class="spinner"></div>
+            <p>Loading formulary data...</p>
+        </div>
+
+        <!-- Formulary Content -->
+        <div id="formularyContent" style="display: none;">
+            <!-- Header -->
+            <div class="formulary-header">
+                <div class="formulary-title">Formulary {{ formulary_id }}</div>
+                <div class="formulary-org-name" id="parentOrg">-</div>
+                <div class="formulary-meta" id="formularyMeta"></div>
+            </div>
+
+            <!-- Quick Stats -->
+            <div class="stats-grid" id="quickStats"></div>
+
+            <!-- Summary Sections -->
+            <div class="summary-grid">
+                <!-- Drug Coverage -->
+                <div class="summary-card">
+                    <h3>📊 Drug Coverage</h3>
+                    <div class="summary-list" id="drugCoverage"></div>
+                </div>
+
+                <!-- Restrictions -->
+                <div class="summary-card">
+                    <h3>🔒 Restrictions</h3>
+                    <div class="summary-list" id="restrictions"></div>
+                </div>
+
+                <!-- Geographic Footprint -->
+                <div class="summary-card">
+                    <h3>🌍 Geographic Footprint</h3>
+                    <div class="summary-list" id="geography"></div>
+                </div>
+
+                <!-- Member Cost Structure -->
+                <div class="summary-card">
+                    <h3>💰 Member Cost Structure</h3>
+                    <div class="summary-list" id="costStructure"></div>
+                </div>
+            </div>
+
+            <!-- Specialty Drugs Section -->
+            <div class="summary-card mt-4">
+                <h3>💎 Specialty Drug Analysis</h3>
+                <div class="summary-list" id="specialtyAnalysis"></div>
+                <button class="btn btn-primary mt-3" onclick="viewSpecialtyDrugs()">
+                    View All Specialty Drugs
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const formularyId = '{{ formulary_id }}';
+        let formularyData = null;
+
+        // Load formulary summary
+        async function loadFormularySummary() {
+            try {
+                const response = await fetch(`/api/formulary/${formularyId}/summary`);
+                formularyData = await response.json();
+                renderFormulary(formularyData);
+                
+                document.getElementById('loadingState').style.display = 'none';
+                document.getElementById('formularyContent').style.display = 'block';
+            } catch (error) {
+                console.error('Error loading formulary:', error);
+                document.getElementById('loadingState').innerHTML = 
+                    '<p style="color: #ef4444;">Error loading formulary data. Please try again.</p>';
+            }
+        }
+
+        // Render formulary data
+        function renderFormulary(data) {
+            // Parent organization
+            const parentOrg = data.parent_org.parent_org || 'Unknown';
+            document.getElementById('parentOrg').textContent = parentOrg;
+            
+            // Set up breadcrumb
+            const contractLink = document.getElementById('contractLink');
+            const contractId = data.parent_org.contract_id || '';
+            if (contractId) {
+                contractLink.textContent = contractId;
+                contractLink.href = `/contract/${contractId}`;
+                document.getElementById('breadcrumb').style.display = 'flex';
+            }
+            
+            // Meta information
+            const meta = document.getElementById('formularyMeta');
+            if (data.parent_org.entity_count > 1) {
+                meta.innerHTML = `
+                    <div class="formulary-meta-item">
+                        <span>📋</span>
+                        <span>${data.parent_org.entity_count} subsidiaries using this formulary</span>
+                    </div>
+                `;
+            }
+            
+            // Quick Stats
+            renderQuickStats(data);
+            
+            // Drug Coverage
+            renderDrugCoverage(data.drug_counts);
+            
+            // Restrictions
+            renderRestrictions(data.restrictions);
+            
+            // Geography
+            renderGeography(data.geography);
+            
+            // Cost Structure
+            renderCostStructure(data.cost_structure);
+            
+            // Specialty Analysis
+            renderSpecialtyAnalysis(data.specialty);
+        }
+
+        // Render quick stats
+        function renderQuickStats(data) {
+            const container = document.getElementById('quickStats');
+            const totalDrugs = data.drug_counts.reduce((sum, d) => sum + d.drug_count, 0);
+            
+            const stats = [
+                { label: 'Total Drugs', value: totalDrugs.toLocaleString() },
+                { label: 'Plans', value: data.geography.plan_count.toLocaleString() },
+                { label: 'States', value: data.geography.state_count },
+                { label: 'Specialty Drugs', value: data.specialty.specialty_drug_count }
+            ];
+            
+            container.innerHTML = stats.map(s => `
+                <div class="stat-card">
+                    <div class="stat-label">${s.label}</div>
+                    <div class="stat-value">${s.value}</div>
+                </div>
+            `).join('');
+        }
+
+        // Render drug coverage
+        function renderDrugCoverage(drugCounts) {
+            const container = document.getElementById('drugCoverage');
+            const totalDrugs = drugCounts.reduce((sum, d) => sum + d.drug_count, 0);
+            
+            const tierNames = {
+                '1': 'Generic',
+                '2': 'Preferred Brand',
+                '3': 'Non-Preferred Brand',
+                '4': 'Non-Preferred Drug',
+                '5': 'Specialty Tier',
+                '6': 'Select Care Drugs'
+            };
+            
+            container.innerHTML = drugCounts.map(d => {
+                const percentage = ((d.drug_count / totalDrugs) * 100).toFixed(1);
+                const tierName = tierNames[d.tier] || `Tier ${d.tier}`;
+                
+                return `
+                    <div class="summary-item clickable" onclick="viewDrugsByTier('${d.tier}')" style="cursor: pointer;">
+                        <div>
+                            <div class="summary-item-label">Tier ${d.tier}: ${tierName}</div>
+                            <div style="font-size: 0.875rem; color: #64748b;">${percentage}% of formulary</div>
+                        </div>
+                        <div class="summary-item-value">${d.drug_count.toLocaleString()} →</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Render restrictions
+        function renderRestrictions(restrictions) {
+            const container = document.getElementById('restrictions');
+            const totalDrugs = restrictions.total_drugs;
+            
+            const items = [
+                { label: 'Prior Authorization', value: restrictions.prior_auth_count },
+                { label: 'Step Therapy', value: restrictions.step_therapy_count },
+                { label: 'Quantity Limits', value: restrictions.quantity_limit_count }
+            ];
+            
+            container.innerHTML = items.map(item => {
+                const percentage = ((item.value / totalDrugs) * 100).toFixed(1);
+                return `
+                    <div class="summary-item">
+                        <div>
+                            <div class="summary-item-label">${item.label}</div>
+                            <div style="font-size: 0.875rem; color: #64748b;">${percentage}% of drugs</div>
+                        </div>
+                        <div class="summary-item-value">${item.value.toLocaleString()}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Render geography
+        function renderGeography(geography) {
+            const container = document.getElementById('geography');
+            
+            const items = [
+                { label: 'Total Plans', value: geography.plan_count },
+                { label: 'States Covered', value: geography.state_count },
+                { label: 'Counties Covered', value: geography.county_count }
+            ];
+            
+            container.innerHTML = items.map(item => `
+                <div class="summary-item" onclick="${item.label === 'States Covered' ? 'viewStateBreakdown()' : ''}">
+                    <div class="summary-item-label">${item.label}</div>
+                    <div class="summary-item-value">${item.value.toLocaleString()}</div>
+                </div>
+            `).join('');
+        }
+
+        // Render cost structure
+        function renderCostStructure(costStructure) {
+            const container = document.getElementById('costStructure');
+            
+            // Group by tier
+            const tierCosts = {};
+            costStructure.forEach(c => {
+                if (!tierCosts[c.tier]) {
+                    tierCosts[c.tier] = [];
+                }
+                tierCosts[c.tier].push(c);
+            });
+            
+            const tierNames = {
+                '1': 'Generic',
+                '2': 'Preferred Brand',
+                '3': 'Non-Preferred Brand',
+                '5': 'Specialty',
+                '6': 'Select Care'
+            };
+            
+            container.innerHTML = Object.entries(tierCosts).map(([tier, costs]) => {
+                const cost = costs[0]; // Take first cost as sample
+                const costTypeLabel = cost.cost_type === '0' ? 'Copay' : 
+                                     cost.cost_type === '1' ? 'Coinsurance' : 'No Charge';
+                const costDisplay = cost.cost_type === '0' ? `$${cost.cost_amt}` :
+                                   cost.cost_type === '1' ? `${cost.cost_amt}%` : 'Free';
+                
+                return `
+                    <div class="summary-item">
+                        <div>
+                            <div class="summary-item-label">Tier ${tier}: ${tierNames[tier] || `Tier ${tier}`}</div>
+                            <div style="font-size: 0.875rem; color: #64748b;">${costTypeLabel} • ${cost.pharmacy_type}</div>
+                        </div>
+                        <div class="summary-item-badge">${costDisplay}</div>
+                    </div>
+                `;
+            }).join('');
+            
+            if (Object.keys(tierCosts).length === 0) {
+                container.innerHTML = '<p style="color: #64748b; text-align: center;">Cost data not available</p>';
+            }
+        }
+
+        // Render specialty analysis
+        function renderSpecialtyAnalysis(specialty) {
+            const container = document.getElementById('specialtyAnalysis');
+            
+            const paPercentage = specialty.specialty_drug_count > 0 ? 
+                ((specialty.specialty_pa_count / specialty.specialty_drug_count) * 100).toFixed(1) : 0;
+            
+            const items = [
+                { label: 'Total Specialty Drugs', value: specialty.specialty_drug_count },
+                { label: 'Require Prior Authorization', value: `${specialty.specialty_pa_count} (${paPercentage}%)` }
+            ];
+            
+            container.innerHTML = items.map(item => `
+                <div class="summary-item">
+                    <div class="summary-item-label">${item.label}</div>
+                    <div class="summary-item-value">${item.value}</div>
+                </div>
+            `).join('');
+        }
+
+        // Navigation functions
+        function viewDrugsByTier(tier) {
+            window.location.href = `/formulary/${formularyId}/tier/${tier}`;
+        }
+
+        function viewStateBreakdown() {
+            // TODO: Implement state breakdown
+            alert('View state-by-state breakdown');
+        }
+
+        function viewSpecialtyDrugs() {
+            // Navigate to specialty tier (Tier 5)
+            window.location.href = `/formulary/${formularyId}/tier/5`;
+        }
+
+        // Initialize
+        loadFormularySummary();
+    </script>
+
+    <style>
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.875rem;
+        }
+
+        .breadcrumb-link {
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .breadcrumb-link:hover {
+            text-decoration: underline;
+        }
+
+        .breadcrumb-separator {
+            color: #9ca3af;
+        }
+
+        .breadcrumb-current {
+            color: #6b7280;
+        }
+    </style>
+</body>
+</html>
+

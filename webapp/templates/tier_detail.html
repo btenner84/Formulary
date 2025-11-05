@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tier Drug Pricing | Medicare Part D</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Breadcrumb -->
+        <div class="breadcrumb">
+            <a href="/" class="breadcrumb-link">Home</a>
+            <span class="breadcrumb-separator">›</span>
+            <span class="breadcrumb-link" id="contractBreadcrumb">...</span>
+            <span class="breadcrumb-separator">›</span>
+            <a href="/formulary/{{ formulary_id }}" class="breadcrumb-link">Formulary {{ formulary_id }}</a>
+            <span class="breadcrumb-separator">›</span>
+            <span class="breadcrumb-current">Tier {{ tier }}</span>
+        </div>
+
+        <div class="header">
+            <h1>💊 Tier {{ tier }} Drug Pricing Analysis</h1>
+            <p class="subtitle">Formulary: {{ formulary_id }}</p>
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Loading drug pricing data from S3...</p>
+        </div>
+
+        <div id="content" style="display: none;">
+            <!-- Summary Stats -->
+            <div class="summary-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="total-drugs">-</div>
+                    <div class="stat-label">Total Drugs</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avg-negotiated">-</div>
+                    <div class="stat-label">Avg Negotiated Cost</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avg-member-pays">-</div>
+                    <div class="stat-label">Avg Member Pays</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="cost-structure">-</div>
+                    <div class="stat-label">Cost Structure</div>
+                </div>
+            </div>
+
+            <!-- Drug Table -->
+            <div class="section">
+                <h2>💊 All Drugs in This Tier</h2>
+                <div class="table-container">
+                    <table id="drugs-table">
+                        <thead>
+                            <tr>
+                                <th>Drug Name</th>
+                                <th>RxCUI</th>
+                                <th>Negotiated Cost</th>
+                                <th>Cost Type</th>
+                                <th>Cost Amount</th>
+                                <th>Member Pays</th>
+                                <th>Plan Net Cost</th>
+                                <th>Restrictions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="drugs-tbody">
+                            <!-- Populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const formularyId = '{{ formulary_id }}';
+        const tier = '{{ tier }}';
+        
+        // Priority drugs to show at top
+        const priorityDrugs = new Set([
+            '1551291', '1992590', '1547545', '2058316', '274783', '204928', 
+            '854905', '2361259', '1926072', '2360764', '1856278', '1657223',
+            '1791852', '1547469', '2589459', '627121', '1551291', '1551393',
+            '1660014', '1791841', '1944007', '2608253', '629466', '1602689',
+            '1792778', '1873988', '1306460', '2360756', '2360763', '904420',
+            '1792776', '2117292', '1657223', '1234571', '2055348', '332122'
+        ]);
+
+        // Load drug names mapping
+        let drugNames = {};
+        async function loadDrugNames() {
+            try {
+                const response = await fetch('/static/drug_names.json');
+                drugNames = await response.json();
+            } catch (error) {
+                console.log('Drug names not loaded:', error);
+            }
+        }
+
+        async function loadTierData() {
+            await loadDrugNames();
+            
+            try {
+                // Get formulary info for breadcrumb
+                const formularyResponse = await fetch(`/api/formulary/${formularyId}/summary`);
+                const formularyData = await formularyResponse.json();
+                
+                // Set up contract breadcrumb
+                if (formularyData.parent_org && formularyData.parent_org.contract_id) {
+                    const contractBreadcrumb = document.getElementById('contractBreadcrumb');
+                    const contractId = formularyData.parent_org.contract_id;
+                    contractBreadcrumb.innerHTML = `<a href="/contract/${contractId}" class="breadcrumb-link">${contractId}</a>`;
+                }
+                
+                const response = await fetch(`/api/formulary/${formularyId}/tier/${tier}/drugs`);
+                let drugs = await response.json();
+                
+                // Sort: priority drugs first, then by negotiated cost
+                drugs.sort((a, b) => {
+                    const aPriority = priorityDrugs.has(a.rxcui);
+                    const bPriority = priorityDrugs.has(b.rxcui);
+                    if (aPriority && !bPriority) return -1;
+                    if (!aPriority && bPriority) return 1;
+                    return b.negotiated_cost - a.negotiated_cost;
+                });
+
+                // Hide loading, show content
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+
+                // Calculate summary stats
+                const totalDrugs = drugs.length;
+                const avgNegotiated = drugs.reduce((sum, d) => sum + d.negotiated_cost, 0) / totalDrugs;
+                const avgMemberPays = drugs.reduce((sum, d) => sum + d.member_pays, 0) / totalDrugs;
+                
+                // Get cost structure from first drug
+                const costType = drugs.length > 0 ? drugs[0].cost_type : 'N/A';
+                const costAmt = drugs.length > 0 ? drugs[0].cost_amt : 0;
+                const costStructure = costType === 'COPAY' 
+                    ? `$${costAmt.toFixed(2)} copay`
+                    : `${costAmt}% coinsurance`;
+
+                // Update summary cards
+                document.getElementById('total-drugs').textContent = totalDrugs.toLocaleString();
+                document.getElementById('avg-negotiated').textContent = `$${avgNegotiated.toFixed(2)}`;
+                document.getElementById('avg-member-pays').textContent = `$${avgMemberPays.toFixed(2)}`;
+                document.getElementById('cost-structure').textContent = costStructure;
+
+                // Populate table
+                const tbody = document.getElementById('drugs-tbody');
+                drugs.forEach(drug => {
+                    const row = tbody.insertRow();
+                    const isPriority = priorityDrugs.has(drug.rxcui);
+                    
+                    // Highlight priority drugs
+                    if (isPriority) {
+                        row.style.backgroundColor = '#fffbeb';
+                        row.style.borderLeft = '4px solid #f59e0b';
+                    }
+                    
+                    // Drug Name
+                    const nameCell = row.insertCell();
+                    const drugName = drugNames[drug.rxcui];
+                    if (drugName) {
+                        nameCell.innerHTML = `
+                            <div style="font-weight: 600; color: #111827;">${drugName}</div>
+                            <div style="font-size: 0.75rem; color: #6b7280;">RxCUI: ${drug.rxcui} | NDC: ${drug.ndc || 'N/A'}</div>
+                        `;
+                    } else {
+                        nameCell.innerHTML = `
+                            <div style="font-weight: 600; color: #111827;">RxCUI ${drug.rxcui}</div>
+                            <div style="font-size: 0.75rem; color: #6b7280;">NDC: ${drug.ndc || 'N/A'}</div>
+                        `;
+                    }
+                    
+                    // RxCUI
+                    const rxcuiCell = row.insertCell();
+                    rxcuiCell.textContent = drug.rxcui || 'N/A';
+                    rxcuiCell.style.fontSize = '0.875rem';
+                    rxcuiCell.style.color = '#6b7280';
+                    
+                    // Negotiated Cost
+                    const negotiatedCell = row.insertCell();
+                    negotiatedCell.textContent = `$${drug.negotiated_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    negotiatedCell.style.fontWeight = 'bold';
+                    negotiatedCell.style.color = '#1e40af';
+                    negotiatedCell.style.fontSize = '1rem';
+                    
+                    // Cost Type
+                    const typeCell = row.insertCell();
+                    if (drug.cost_type === 'COPAY') {
+                        typeCell.innerHTML = `<span class="badge badge-blue">COPAY</span>`;
+                    } else if (drug.cost_type === 'COINSURANCE') {
+                        typeCell.innerHTML = `<span class="badge badge-purple">COINSURANCE</span>`;
+                    } else {
+                        typeCell.innerHTML = `<span class="badge" style="background: #f3f4f6; color: #6b7280;">NONE</span>`;
+                    }
+                    
+                    // Cost Amount
+                    const amtCell = row.insertCell();
+                    if (drug.cost_type === 'COPAY') {
+                        amtCell.innerHTML = `<strong>$${drug.cost_amt.toFixed(2)}</strong>`;
+                        amtCell.style.color = '#1e40af';
+                    } else if (drug.cost_type === 'COINSURANCE') {
+                        amtCell.innerHTML = `<strong>${drug.cost_amt}%</strong>`;
+                        amtCell.style.color = '#7c3aed';
+                    } else {
+                        amtCell.textContent = '$0.00';
+                        amtCell.style.color = '#6b7280';
+                    }
+                    
+                    // Member Pays
+                    const memberCell = row.insertCell();
+                    memberCell.textContent = `$${drug.member_pays.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    memberCell.style.fontWeight = 'bold';
+                    memberCell.style.color = '#dc2626';
+                    memberCell.style.fontSize = '1rem';
+                    
+                    // Plan Net Cost
+                    const planCell = row.insertCell();
+                    planCell.textContent = `$${drug.plan_net_cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    planCell.style.fontWeight = 'bold';
+                    planCell.style.color = '#16a34a';
+                    planCell.style.fontSize = '1rem';
+                    
+                    // Restrictions
+                    const restrictionsCell = row.insertCell();
+                    const restrictions = [];
+                    if (drug.prior_auth === 'Y') restrictions.push('<span class="badge badge-red">PA</span>');
+                    if (drug.step_therapy === 'Y') restrictions.push('<span class="badge badge-orange">ST</span>');
+                    if (drug.quantity_limit === 'Y') restrictions.push('<span class="badge badge-yellow">QL</span>');
+                    restrictionsCell.innerHTML = restrictions.length > 0 ? restrictions.join(' ') : '-';
+                });
+
+            } catch (error) {
+                console.error('Error loading tier data:', error);
+                document.getElementById('loading').innerHTML = `
+                    <p style="color: #dc2626;">Error loading data: ${error.message}</p>
+                `;
+            }
+        }
+
+        // Load data on page load
+        loadTierData();
+    </script>
+
+    <style>
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.875rem;
+            flex-wrap: wrap;
+        }
+
+        .breadcrumb-link {
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .breadcrumb-link:hover {
+            text-decoration: underline;
+        }
+
+        .breadcrumb-separator {
+            color: #9ca3af;
+        }
+
+        .breadcrumb-current {
+            color: #6b7280;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .table-container {
+            overflow-x: auto;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th {
+            background: #f9fafb;
+            font-weight: 600;
+            color: #374151;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        tbody tr:hover {
+            background: #f9fafb;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-blue {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        .badge-purple {
+            background: #e9d5ff;
+            color: #7c3aed;
+        }
+        .badge-red {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        .badge-orange {
+            background: #fed7aa;
+            color: #ea580c;
+        }
+        .badge-yellow {
+            background: #fef3c7;
+            color: #d97706;
+        }
+    </style>
+</body>
+</html>
+

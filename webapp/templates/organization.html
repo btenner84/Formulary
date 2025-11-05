@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Organization Details - Medicare Part D Intelligence</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">
+            💊 Medicare Part D <span>Intelligence</span>
+        </a>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Breadcrumb -->
+        <div class="breadcrumb">
+            <a href="/">Home</a>
+            <span class="breadcrumb-separator">›</span>
+            <span class="breadcrumb-current" id="orgNameBreadcrumb">Loading...</span>
+        </div>
+
+        <!-- Organization Header -->
+        <div class="page-header">
+            <h1 id="orgName">Loading...</h1>
+        </div>
+
+        <!-- Organization Stats -->
+        <div class="stats-grid" id="orgStats">
+            <div class="stat-card">
+                <div class="stat-label">Total Enrollment</div>
+                <div class="stat-value" id="statEnrollment">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Plans</div>
+                <div class="stat-value" id="statPlans">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Contracts</div>
+                <div class="stat-value" id="statContracts">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Formularies</div>
+                <div class="stat-value" id="statFormularies">-</div>
+            </div>
+        </div>
+
+        <!-- Plans List -->
+        <div class="section">
+            <h2>Plans (Sorted by Enrollment)</h2>
+            <div id="plansContainer">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading plans...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const orgName = decodeURIComponent("{{ org_name }}");
+        let allPlans = [];
+
+        // Set org name in header
+        document.getElementById('orgName').textContent = orgName;
+        document.getElementById('orgNameBreadcrumb').textContent = orgName;
+
+        // Load plans for this organization
+        async function loadPlans() {
+            try {
+                const response = await fetch(`/api/organization/${encodeURIComponent(orgName)}/plans`);
+                allPlans = await response.json();
+                
+                if (allPlans.length === 0) {
+                    document.getElementById('plansContainer').innerHTML = 
+                        '<p style="color: #64748b; text-align: center;">No plans found with formulary data for this organization.</p>';
+                    return;
+                }
+
+                // Calculate stats
+                const totalEnrollment = allPlans.reduce((sum, p) => sum + (p.enrollment || 0), 0);
+                const uniqueContracts = new Set(allPlans.map(p => p.contract_number)).size;
+                const uniqueFormularies = new Set(allPlans.map(p => p.formulary_id)).size;
+                
+                document.getElementById('statEnrollment').textContent = totalEnrollment.toLocaleString();
+                document.getElementById('statPlans').textContent = allPlans.length.toLocaleString();
+                document.getElementById('statContracts').textContent = uniqueContracts.toLocaleString();
+                document.getElementById('statFormularies').textContent = uniqueFormularies.toLocaleString();
+                
+                renderPlans(allPlans);
+            } catch (error) {
+                console.error('Error loading plans:', error);
+                document.getElementById('plansContainer').innerHTML = 
+                    '<p style="color: #ef4444; text-align: center;">Error loading plans. Please try again.</p>';
+            }
+        }
+
+        // Render plans
+        function renderPlans(plans) {
+            const container = document.getElementById('plansContainer');
+            
+            const table = document.createElement('div');
+            table.className = 'plan-table';
+            
+            // Header
+            table.innerHTML = `
+                <div class="plan-table-header">
+                    <div class="plan-table-col plan-col-id">Plan ID</div>
+                    <div class="plan-table-col plan-col-name">Plan Name</div>
+                    <div class="plan-table-col plan-col-enrollment">Enrollment</div>
+                    <div class="plan-table-col plan-col-states">States</div>
+                    <div class="plan-table-col plan-col-formulary">Formulary</div>
+                    <div class="plan-table-col plan-col-action">Action</div>
+                </div>
+            `;
+            
+            // Rows
+            plans.forEach(plan => {
+                const row = document.createElement('div');
+                row.className = 'plan-table-row';
+                
+                const enrollment = plan.enrollment ? plan.enrollment.toLocaleString() : 'N/A';
+                
+                row.innerHTML = `
+                    <div class="plan-table-col plan-col-id"><strong>${plan.plan_full_id}</strong></div>
+                    <div class="plan-table-col plan-col-name">${plan.plan_name || 'Unknown Plan'}</div>
+                    <div class="plan-table-col plan-col-enrollment">${enrollment}</div>
+                    <div class="plan-table-col plan-col-states">${plan.state_count || 0}</div>
+                    <div class="plan-table-col plan-col-formulary"><code>${plan.formulary_id}</code></div>
+                    <div class="plan-table-col plan-col-action">
+                        <a href="/formulary/${plan.formulary_id}" class="btn-view">View Details →</a>
+                    </div>
+                `;
+                
+                table.appendChild(row);
+            });
+            
+            container.innerHTML = '';
+            container.appendChild(table);
+        }
+
+        // Initialize
+        loadPlans();
+    </script>
+
+    <style>
+        .plan-table {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .plan-table-header {
+            display: grid;
+            grid-template-columns: 130px 1fr 120px 80px 150px 140px;
+            gap: 1rem;
+            padding: 1rem 1.5rem;
+            background: #f9fafb;
+            border-bottom: 2px solid #e5e7eb;
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: #374151;
+        }
+
+        .plan-table-row {
+            display: grid;
+            grid-template-columns: 130px 1fr 120px 80px 150px 140px;
+            gap: 1rem;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #f3f4f6;
+            align-items: center;
+            transition: background 0.15s;
+        }
+
+        .plan-table-row:hover {
+            background: #f9fafb;
+        }
+
+        .plan-table-row:last-child {
+            border-bottom: none;
+        }
+
+        .plan-table-col {
+            font-size: 0.875rem;
+            color: #1f2937;
+        }
+
+        .plan-col-name {
+            color: #6b7280;
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
+
+        .plan-col-formulary code {
+            background: #f3f4f6;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: #1e40af;
+        }
+
+        .btn-view {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #2563eb;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            text-align: center;
+        }
+
+        .btn-view:hover {
+            background: #1e40af;
+            transform: translateX(2px);
+        }
+
+        .section {
+            margin-top: 2rem;
+        }
+
+        .section h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #1e40af;
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</body>
+</html>
+

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medicare Part D Intelligence Platform</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">
+            💊 Medicare Part D <span>Intelligence</span>
+        </a>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Year Toggle -->
+        <div class="year-toggle-container">
+            <span class="year-label">Data Year:</span>
+            <div class="year-toggle">
+                <button class="year-btn active" data-year="2025">2025</button>
+                <button class="year-btn" data-year="2026">2026</button>
+            </div>
+            <button class="yoy-btn" onclick="window.location.href='/yoy/organizations'">
+                📊 Compare Years
+            </button>
+        </div>
+
+        <!-- Page Header -->
+        <div class="page-header">
+            <h1>Parent Organization Intelligence</h1>
+            <p>Browse organizations sorted by total enrollment - Click to explore their plans and formularies</p>
+        </div>
+
+        <!-- Global Stats -->
+        <div class="stats-grid" id="globalStats">
+            <div class="stat-card">
+                <div class="stat-label">Organizations</div>
+                <div class="stat-value" id="statOrgs">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Enrollment</div>
+                <div class="stat-value" id="statEnrollment">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Plans</div>
+                <div class="stat-value" id="statPlans">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Contracts</div>
+                <div class="stat-value" id="statContracts">-</div>
+            </div>
+        </div>
+
+        <!-- Search Section -->
+        <div class="search-section">
+            <input 
+                type="text" 
+                id="searchInput" 
+                class="search-input" 
+                placeholder="🔍 Search by Organization Name (e.g., Humana, UnitedHealth, CVS Health)..."
+            >
+        </div>
+
+        <!-- Organizations Grid -->
+        <div id="orgsContainer">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Loading organizations...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allOrgs = [];
+        let currentYear = '2025';
+
+        // Year toggle functionality
+        document.querySelectorAll('.year-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                // Update active state
+                document.querySelectorAll('.year-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                
+                // Update current year
+                currentYear = this.dataset.year;
+                
+                // Reload data
+                loadOrganizations();
+            });
+        });
+
+        // Load organizations and calculate stats
+        async function loadOrganizations() {
+            try {
+                const response = await fetch(`/api/plans?year=${currentYear}`);
+                allOrgs = await response.json();
+                
+                // Calculate stats
+                const totalEnrollment = allOrgs.reduce((sum, o) => sum + (o.total_enrollment || 0), 0);
+                const totalPlans = allOrgs.reduce((sum, o) => sum + (o.plan_count || 0), 0);
+                const totalContracts = allOrgs.reduce((sum, o) => sum + (o.contract_count || 0), 0);
+                
+                document.getElementById('statOrgs').textContent = allOrgs.length.toLocaleString();
+                document.getElementById('statEnrollment').textContent = totalEnrollment.toLocaleString();
+                document.getElementById('statPlans').textContent = totalPlans.toLocaleString();
+                document.getElementById('statContracts').textContent = totalContracts.toLocaleString();
+                
+                renderOrganizations(allOrgs);
+            } catch (error) {
+                console.error('Error loading organizations:', error);
+                document.getElementById('orgsContainer').innerHTML = 
+                    '<p style="color: #ef4444; text-align: center;">Error loading organizations. Please try again.</p>';
+            }
+        }
+
+        // Render organizations
+        function renderOrganizations(orgs) {
+            const container = document.getElementById('orgsContainer');
+            
+            if (orgs.length === 0) {
+                container.innerHTML = '<p style="color: #64748b; text-align: center;">No organizations found.</p>';
+                return;
+            }
+            
+            const grid = document.createElement('div');
+            grid.className = 'org-grid';
+            
+            orgs.forEach(org => {
+                const card = document.createElement('a');
+                card.className = 'org-card';
+                card.href = `/organization/${encodeURIComponent(org.parent_organization)}`;
+                
+                const enrollment = org.total_enrollment ? org.total_enrollment.toLocaleString() : 'N/A';
+                
+                card.innerHTML = `
+                    <div class="org-header">
+                        <div class="org-name">${org.parent_organization}</div>
+                    </div>
+                    <div class="org-stats">
+                        <div class="org-stat">
+                            <span class="org-stat-icon">👥</span>
+                            <span class="org-stat-value">${enrollment}</span>
+                            <span class="org-stat-label">Total Enrollment</span>
+                        </div>
+                        <div class="org-stat">
+                            <span class="org-stat-icon">🏥</span>
+                            <span class="org-stat-value">${org.plan_count.toLocaleString()}</span>
+                            <span class="org-stat-label">Plans</span>
+                        </div>
+                        <div class="org-stat">
+                            <span class="org-stat-icon">📄</span>
+                            <span class="org-stat-value">${org.contract_count}</span>
+                            <span class="org-stat-label">Contracts</span>
+                        </div>
+                        <div class="org-stat">
+                            <span class="org-stat-icon">📋</span>
+                            <span class="org-stat-value">${org.formulary_count}</span>
+                            <span class="org-stat-label">Formularies</span>
+                        </div>
+                    </div>
+                `;
+                
+                grid.appendChild(card);
+            });
+            
+            container.innerHTML = '';
+            container.appendChild(grid);
+        }
+
+        // Search organizations
+        function searchOrganizations() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            
+            if (!searchTerm) {
+                renderOrganizations(allOrgs);
+                return;
+            }
+            
+            const filtered = allOrgs.filter(o => 
+                (o.parent_organization && o.parent_organization.toLowerCase().includes(searchTerm)) ||
+                (o.organization_marketing_name && o.organization_marketing_name.toLowerCase().includes(searchTerm))
+            );
+            
+            renderOrganizations(filtered);
+        }
+
+        // Event listeners
+        document.getElementById('searchInput').addEventListener('input', searchOrganizations);
+
+        // Initialize
+        loadOrganizations();
+    </script>
+
+    <style>
+        .org-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .org-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 1.5rem;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.2s;
+            display: block;
+        }
+
+        .org-card:hover {
+            border-color: #2563eb;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .org-header {
+            margin-bottom: 1.25rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid #f3f4f6;
+        }
+
+        .org-name {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #1e40af;
+            line-height: 1.3;
+        }
+
+        .org-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+
+        .org-stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.75rem;
+            background: #f9fafb;
+            border-radius: 6px;
+        }
+
+        .org-stat-icon {
+            font-size: 1.5rem;
+        }
+
+        .org-stat-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #2563eb;
+        }
+
+        .org-stat-label {
+            font-size: 0.7rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            text-align: center;
+        }
+    </style>
+</body>
+</html>

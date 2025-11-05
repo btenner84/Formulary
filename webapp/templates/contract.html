@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contract Detail - Medicare Part D</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">
+            💊 Medicare Part D <span>Intelligence</span>
+        </a>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container">
+        <div class="back-link-container">
+            <a href="/" class="back-link">← Back to All Contracts</a>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="loading">
+            <div class="spinner"></div>
+            <p>Loading contract data...</p>
+        </div>
+
+        <!-- Contract Content -->
+        <div id="contractContent" style="display: none;">
+            <!-- Header -->
+            <div class="page-header">
+                <h1 id="contractName">-</h1>
+                <p>Formularies and coverage strategies</p>
+            </div>
+
+            <!-- Contract Stats -->
+            <div class="stats-grid" id="contractStats"></div>
+
+            <!-- Formularies Section -->
+            <div class="section">
+                <h2>📋 Formularies</h2>
+                <p class="section-description">Click a formulary to see detailed drug coverage and pricing</p>
+                <div id="formulariesGrid" class="formulary-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const contractId = '{{ contract_name }}';  // This is actually contract_id now
+
+        async function loadContractData() {
+            try {
+                // Load formularies for this contract using new endpoint
+                const response = await fetch(`/api/contract/${contractId}/formularies`);
+                const contractFormularies = await response.json();
+
+                if (contractFormularies.length === 0) {
+                    document.getElementById('loadingState').innerHTML = 
+                        '<p style="color: #ef4444;">No formularies found for this contract.</p>';
+                    return;
+                }
+
+                // Update contract name (use contract ID + organization name)
+                const contractName = contractFormularies[0].contract_name || 'Unknown';
+                document.getElementById('contractName').textContent = `${contractId} - ${contractName}`;
+
+                // Calculate stats
+                const totalPlans = contractFormularies.reduce((sum, f) => sum + f.plan_count, 0);
+                const totalStates = Math.max(...contractFormularies.map(f) => f.state_count || 0));
+                const totalCounties = Math.max(...contractFormularies.map(f => f.county_count || 0));
+
+                // Render stats
+                const statsContainer = document.getElementById('contractStats');
+                statsContainer.innerHTML = `
+                    <div class="stat-card">
+                        <div class="stat-label">Formularies</div>
+                        <div class="stat-value">${contractFormularies.length}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Plans</div>
+                        <div class="stat-value">${totalPlans.toLocaleString()}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">States</div>
+                        <div class="stat-value">${totalStates}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Counties</div>
+                        <div class="stat-value">${totalCounties.toLocaleString()}</div>
+                    </div>
+                `;
+
+                // Render formularies
+                const formulariesGrid = document.getElementById('formulariesGrid');
+                formulariesGrid.innerHTML = '';
+
+                contractFormularies.forEach(f => {
+                    const card = document.createElement('a');
+                    card.className = 'formulary-card';
+                    card.href = `/formulary/${f.formulary_id}`;
+                    
+                    card.innerHTML = `
+                        <div class="formulary-id">Formulary ${f.formulary_id}</div>
+                        <div class="formulary-stats">
+                            <div class="formulary-stat">
+                                <span class="formulary-stat-label">Plans</span>
+                                <span class="formulary-stat-value">${f.plan_count.toLocaleString()}</span>
+                            </div>
+                            <div class="formulary-stat">
+                                <span class="formulary-stat-label">States</span>
+                                <span class="formulary-stat-value">${f.state_count || 0}</span>
+                            </div>
+                            <div class="formulary-stat">
+                                <span class="formulary-stat-label">Counties</span>
+                                <span class="formulary-stat-value">${(f.county_count || 0).toLocaleString()}</span>
+                            </div>
+                        </div>
+                        <div class="formulary-action">View Details →</div>
+                    `;
+                    
+                    formulariesGrid.appendChild(card);
+                });
+
+                // Show content
+                document.getElementById('loadingState').style.display = 'none';
+                document.getElementById('contractContent').style.display = 'block';
+
+            } catch (error) {
+                console.error('Error loading contract:', error);
+                document.getElementById('loadingState').innerHTML = 
+                    '<p style="color: #ef4444;">Error loading contract data. Please try again.</p>';
+            }
+        }
+
+        // Initialize
+        loadContractData();
+    </script>
+
+    <style>
+        .back-link-container {
+            margin-bottom: 1.5rem;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #2563eb;
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .section {
+            margin-top: 3rem;
+        }
+
+        .section h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #111827;
+            margin-bottom: 0.5rem;
+        }
+
+        .section-description {
+            color: #6b7280;
+            margin-bottom: 1.5rem;
+        }
+
+        .formulary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .formulary-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 1.5rem;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .formulary-card:hover {
+            border-color: #2563eb;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .formulary-id {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: #2563eb;
+            margin-bottom: 1rem;
+        }
+
+        .formulary-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+            padding: 1rem 0;
+            border-top: 1px solid #f3f4f6;
+            border-bottom: 1px solid #f3f4f6;
+            margin-bottom: 1rem;
+        }
+
+        .formulary-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .formulary-stat-label {
+            font-size: 0.75rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .formulary-stat-value {
+            font-size: 1.125rem;
+            font-weight: 700;
+            color: #111827;
+        }
+
+        .formulary-action {
+            color: #2563eb;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+    </style>
+</body>
+</html>
+
