@@ -664,8 +664,14 @@ async def get_glp1_master_table(year: str = "2025"):
         """).fetchone()[0]
         print(f"🔍 Debug: Found {test_count:,} records for test RXCUI {test_rxcui}")
         
-        # Build company filter (case-insensitive)
-        company_filter = " OR ".join([
+        # Build company filter (case-insensitive) - without alias for direct queries
+        company_filter_no_alias = " OR ".join([
+            f"UPPER(contract_name) LIKE '%{co.upper()}%'" 
+            for co in TARGET_COMPANIES
+        ])
+        
+        # Build company filter with alias for JOIN queries
+        company_filter_with_alias = " OR ".join([
             f"UPPER(p.contract_name) LIKE '%{co.upper()}%'" 
             for co in TARGET_COMPANIES
         ])
@@ -674,7 +680,7 @@ async def get_glp1_master_table(year: str = "2025"):
         company_count = conn.execute(f"""
             SELECT COUNT(DISTINCT contract_name) as cnt
             FROM plans
-            WHERE ({company_filter})
+            WHERE ({company_filter_no_alias})
         """).fetchone()[0]
         print(f"🔍 Debug: Found {company_count} matching companies")
         
@@ -690,7 +696,7 @@ async def get_glp1_master_table(year: str = "2025"):
                     p.plan_id,
                     p.contract_id
                 FROM plans p
-                WHERE ({company_filter})
+                WHERE ({company_filter_with_alias})
             ),
             drug_coverage AS (
                 SELECT DISTINCT
@@ -768,7 +774,7 @@ async def get_glp1_master_table(year: str = "2025"):
                             COUNT(DISTINCT formulary_id) as total_formularies,
                             COUNT(DISTINCT plan_id) as total_plans
                         FROM plans
-                        WHERE ({company_filter})
+                        WHERE ({company_filter_no_alias})
                         GROUP BY contract_name
                     """
                     company_totals_df = conn.execute(company_totals_query).fetchdf()
