@@ -87,23 +87,49 @@
 
             try {
                 const response = await fetch(`/api/glp1/master-table?year=${year}`);
-                glp1Data = await response.json();
                 
-                renderMasterTable();
-                renderSummaryStats();
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
                 
-                document.getElementById('loadingState').style.display = 'none';
-                document.getElementById('masterTableContainer').style.display = 'block';
+                const data = await response.json();
+                
+                // Ensure data is an array
+                if (!Array.isArray(data)) {
+                    console.error('Expected array but got:', typeof data, data);
+                    glp1Data = [];
+                } else {
+                    glp1Data = data;
+                }
+                
+                if (glp1Data.length === 0) {
+                    document.getElementById('loadingState').innerHTML = 
+                        '<p style="color: #f59e0b;">No data found. This may be due to incorrect RXCUI codes or missing data.</p>';
+                    document.getElementById('masterTableContainer').style.display = 'none';
+                } else {
+                    renderMasterTable();
+                    renderSummaryStats();
+                    
+                    document.getElementById('loadingState').style.display = 'none';
+                    document.getElementById('masterTableContainer').style.display = 'block';
+                }
             } catch (error) {
                 console.error('Error loading GLP-1 data:', error);
                 document.getElementById('loadingState').innerHTML = 
-                    '<p style="color: #ef4444;">Error loading data. Please try again.</p>';
+                    '<p style="color: #ef4444;">Error loading data: ' + error.message + '. Please check the console for details.</p>';
+                document.getElementById('masterTableContainer').style.display = 'none';
             }
         }
 
         // Render summary statistics
         function renderSummaryStats() {
             const statsContainer = document.getElementById('summaryStats');
+            
+            // Safety check
+            if (!Array.isArray(glp1Data) || glp1Data.length === 0) {
+                statsContainer.innerHTML = '<p>No data available</p>';
+                return;
+            }
             
             // Calculate totals
             const totalCompanies = new Set(glp1Data.map(d => d.contract_name)).size;
@@ -139,6 +165,12 @@
         function renderMasterTable() {
             const tableHead = document.getElementById('tableHead');
             const tableBody = document.getElementById('tableBody');
+
+            // Safety check
+            if (!Array.isArray(glp1Data) || glp1Data.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="20" style="text-align: center; padding: 2rem;">No data available</td></tr>';
+                return;
+            }
 
             // Get unique companies and drugs
             const companies = [...new Set(glp1Data.map(d => d.contract_name))].sort();
