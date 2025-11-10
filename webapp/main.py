@@ -706,6 +706,10 @@ async def get_glp1_master_table(year: str = "2025"):
             """
             ndcs_df = conn.execute(ndcs_query).fetchdf()
             
+            print(f"🔍 {drug_name} (RXCUI {rxcui}): Found {len(ndcs_df)} NDCs")
+            if not ndcs_df.empty:
+                print(f"   NDCs: {', '.join(ndcs_df['ndc'].tolist()[:10])}")  # Show first 10
+            
             if ndcs_df.empty:
                 continue
             
