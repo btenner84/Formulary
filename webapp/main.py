@@ -696,57 +696,75 @@ async def get_glp1_master_table(year: str = "2025"):
         results = []
         
         for drug_name, rxcui in GLP1_DRUGS.items():
-            # Get stats grouped by normalized parent organization
-            query = f"""
-            WITH company_plans AS (
-                SELECT DISTINCT
-                    p.contract_id,
-                    p.formulary_id,
-                    p.plan_id,
-                    COALESCE(pe.parent_organization, p.contract_name) as parent_org
-                FROM plans p
-                LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
-                WHERE {contract_filter}
-            ),
-            normalized_plans AS (
-                SELECT 
-                    cp.*,
-                    CASE 
-                        WHEN UPPER(cp.parent_org) LIKE '%ELEVANCE%' THEN 'Elevance'
-                        WHEN UPPER(cp.parent_org) LIKE '%UNITEDHEALTH%' OR UPPER(cp.parent_org) LIKE '%UNITED HEALTH%' THEN 'UnitedHealth'
-                        WHEN UPPER(cp.parent_org) LIKE '%HUMANA%' THEN 'Humana'
-                        WHEN UPPER(cp.parent_org) LIKE '%CVS%' OR UPPER(cp.parent_org) LIKE '%AETNA%' THEN 'CVS'
-                        WHEN UPPER(cp.parent_org) LIKE '%MOLINA%' THEN 'Molina'
-                        WHEN UPPER(cp.parent_org) LIKE '%CENTENE%' THEN 'Centene'
-                        WHEN UPPER(cp.parent_org) LIKE '%ALIGNMENT%' THEN 'Alignment'
-                        ELSE NULL
-                    END as normalized_org
-                FROM company_plans cp
-                WHERE cp.parent_org IS NOT NULL
-            ),
-            company_totals AS (
-                SELECT 
-                    normalized_org,
-                    COUNT(DISTINCT formulary_id) as total_formularies,
-                    COUNT(DISTINCT plan_id) as total_plans
-                FROM normalized_plans
-                WHERE normalized_org IS NOT NULL
-                GROUP BY normalized_org
-            ),
-            drug_coverage AS (
-                SELECT DISTINCT
-                    np.normalized_org,
-                    np.formulary_id,
-                    np.plan_id,
-                    CAST(fd.tier_level_value AS VARCHAR) as tier_level_value,
-                    fd.prior_authorization_yn,
-                    fd.step_therapy_yn,
-                    fd.quantity_limit_yn
-                FROM normalized_plans np
-                JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
-                WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
-                  AND np.normalized_org IS NOT NULL
-            ),
+            # Get all NDCs for this drug (each NDC = different dosage/strength)
+            ndcs_query = f"""
+                SELECT DISTINCT ndc
+                FROM formulary_drugs
+                WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
+                  AND ndc IS NOT NULL
+                ORDER BY ndc
+            """
+            ndcs_df = conn.execute(ndcs_query).fetchdf()
+            
+            if ndcs_df.empty:
+                continue
+            
+            # Process each NDC separately
+            for _, ndc_row in ndcs_df.iterrows():
+                ndc = ndc_row['ndc']
+                
+                # Get stats grouped by normalized parent organization for this specific NDC
+                query = f"""
+                WITH company_plans AS (
+                    SELECT DISTINCT
+                        p.contract_id,
+                        p.formulary_id,
+                        p.plan_id,
+                        COALESCE(pe.parent_organization, p.contract_name) as parent_org
+                    FROM plans p
+                    LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+                    WHERE {contract_filter}
+                ),
+                normalized_plans AS (
+                    SELECT 
+                        cp.*,
+                        CASE 
+                            WHEN UPPER(cp.parent_org) LIKE '%ELEVANCE%' THEN 'Elevance'
+                            WHEN UPPER(cp.parent_org) LIKE '%UNITEDHEALTH%' OR UPPER(cp.parent_org) LIKE '%UNITED HEALTH%' THEN 'UnitedHealth'
+                            WHEN UPPER(cp.parent_org) LIKE '%HUMANA%' THEN 'Humana'
+                            WHEN UPPER(cp.parent_org) LIKE '%CVS%' OR UPPER(cp.parent_org) LIKE '%AETNA%' THEN 'CVS'
+                            WHEN UPPER(cp.parent_org) LIKE '%MOLINA%' THEN 'Molina'
+                            WHEN UPPER(cp.parent_org) LIKE '%CENTENE%' THEN 'Centene'
+                            WHEN UPPER(cp.parent_org) LIKE '%ALIGNMENT%' THEN 'Alignment'
+                            ELSE NULL
+                        END as normalized_org
+                    FROM company_plans cp
+                    WHERE cp.parent_org IS NOT NULL
+                ),
+                company_totals AS (
+                    SELECT 
+                        normalized_org,
+                        COUNT(DISTINCT formulary_id) as total_formularies,
+                        COUNT(DISTINCT plan_id) as total_plans
+                    FROM normalized_plans
+                    WHERE normalized_org IS NOT NULL
+                    GROUP BY normalized_org
+                ),
+                drug_coverage AS (
+                    SELECT DISTINCT
+                        np.normalized_org,
+                        np.formulary_id,
+                        np.plan_id,
+                        CAST(fd.tier_level_value AS VARCHAR) as tier_level_value,
+                        fd.prior_authorization_yn,
+                        fd.step_therapy_yn,
+                        fd.quantity_limit_yn
+                    FROM normalized_plans np
+                    JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
+                    WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
+                      AND fd.ndc = '{ndc}'
+                      AND np.normalized_org IS NOT NULL
+                ),
             drug_stats AS (
                 SELECT 
                     dc.normalized_org,
@@ -824,8 +842,9 @@ async def get_glp1_master_table(year: str = "2025"):
                         })
                     result = pd.DataFrame(empty_data)
                 
-                # Add drug name to each row
+                # Add drug name and NDC to each row
                 result['drug_name'] = drug_name
+                result['ndc'] = ndc
                 result['rxcui'] = rxcui
                 
                 results.append(result)
@@ -865,16 +884,18 @@ async def get_glp1_master_table(year: str = "2025"):
             'ql_pct': 0
         })
         
-        # Pivot: Transform to have one row per drug, with companies as nested objects
+        # Pivot: Transform to have one row per drug+NDC combination, with companies as nested objects
         pivoted_data = []
-        for drug_name in GLP1_DRUGS.keys():
-            drug_data = combined[combined['drug_name'] == drug_name].copy()
+        # Group by drug_name and ndc
+        for (drug_name, ndc), drug_data in combined.groupby(['drug_name', 'ndc']):
+            drug_data = drug_data.copy()
             
             if drug_data.empty:
-                # Create empty entry for this drug
+                # Create empty entry for this drug+NDC
                 drug_row = {
                     'drug_name': drug_name,
-                    'rxcui': GLP1_DRUGS[drug_name],
+                    'ndc': ndc,
+                    'rxcui': GLP1_DRUGS.get(drug_name, ''),
                     'companies': {}
                 }
                 for company in TARGET_COMPANIES:
@@ -905,6 +926,7 @@ async def get_glp1_master_table(year: str = "2025"):
                 first_row = drug_data.iloc[0]
                 drug_row = {
                     'drug_name': drug_name,
+                    'ndc': ndc,
                     'rxcui': first_row['rxcui'],
                     'companies': {}
                 }
@@ -1016,21 +1038,25 @@ async def get_glp1_pricing(year: str = "2025"):
         results = []
         
         for drug_name, rxcui in GLP1_DRUGS.items():
-            # Get NDC for this drug
-            ndc_result = conn.execute(f"""
+            # Get all NDCs for this drug (each NDC = different dosage/strength)
+            ndcs_query = f"""
                 SELECT DISTINCT ndc
                 FROM formulary_drugs
                 WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
-                LIMIT 1
-            """).fetchone()
+                  AND ndc IS NOT NULL
+                ORDER BY ndc
+            """
+            ndcs_df = conn.execute(ndcs_query).fetchdf()
             
-            if not ndc_result:
+            if ndcs_df.empty:
                 continue
             
-            ndc = ndc_result[0]
-            
-            # Get pricing by normalized company
-            query = f"""
+            # Process each NDC separately
+            for _, ndc_row in ndcs_df.iterrows():
+                ndc = ndc_row['ndc']
+                
+                # Get pricing by normalized company for this specific NDC
+                query = f"""
             WITH company_plans AS (
                 SELECT DISTINCT
                     p.contract_id,
@@ -1082,15 +1108,25 @@ async def get_glp1_pricing(year: str = "2025"):
             try:
                 result = conn.execute(query).fetchdf()
                 
-                if result.empty:
-                    continue
-                
-                # Pivot by company
+                # Pivot by company (create row even if empty)
                 drug_row = {
                     'drug_name': drug_name,
+                    'ndc': ndc,
                     'rxcui': rxcui,
                     'companies': {}
                 }
+                
+                if result.empty:
+                    # Create empty entries for all companies
+                    for company in TARGET_COMPANIES:
+                        drug_row['companies'][company] = {
+                            'avg_unit_cost': 0.0,
+                            'min_unit_cost': 0.0,
+                            'max_unit_cost': 0.0,
+                            'plan_count': 0
+                        }
+                    results.append(drug_row)
+                    continue
                 
                 for company in TARGET_COMPANIES:
                     company_data = result[result['company'] == company]
@@ -1173,7 +1209,24 @@ async def get_glp1_member_costs(year: str = "2025"):
         results = []
         
         for drug_name, rxcui in GLP1_DRUGS.items():
-            query = f"""
+            # Get all NDCs for this drug (each NDC = different dosage/strength)
+            ndcs_query = f"""
+                SELECT DISTINCT ndc
+                FROM formulary_drugs
+                WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
+                  AND ndc IS NOT NULL
+                ORDER BY ndc
+            """
+            ndcs_df = conn.execute(ndcs_query).fetchdf()
+            
+            if ndcs_df.empty:
+                continue
+            
+            # Process each NDC separately
+            for _, ndc_row in ndcs_df.iterrows():
+                ndc = ndc_row['ndc']
+                
+                query = f"""
             WITH company_plans AS (
                 SELECT DISTINCT
                     p.contract_id,
@@ -1208,6 +1261,7 @@ async def get_glp1_member_costs(year: str = "2025"):
                 FROM normalized_plans np
                 JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
                 WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
+                  AND fd.ndc = '{ndc}'
                   AND np.normalized_org IS NOT NULL
                   AND fd.tier_level_value IS NOT NULL
             ),
@@ -1243,6 +1297,7 @@ async def get_glp1_member_costs(year: str = "2025"):
                     # Create empty entry
                     drug_row = {
                         'drug_name': drug_name,
+                        'ndc': ndc,
                         'rxcui': rxcui,
                         'companies': {}
                     }
@@ -1310,6 +1365,7 @@ async def get_glp1_member_costs(year: str = "2025"):
                 # Process results
                 drug_row = {
                     'drug_name': drug_name,
+                    'ndc': ndc,
                     'rxcui': rxcui,
                     'companies': {}
                 }

@@ -140,7 +140,7 @@
 
             // Safety check
             if (!Array.isArray(glp1Data) || glp1Data.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="64" style="text-align: center; padding: 2rem;">No data available</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="65" style="text-align: center; padding: 2rem;">No data available</td></tr>';
                 return;
             }
 
@@ -151,6 +151,7 @@
             let headerHTML = `
                 <tr>
                     <th rowspan="2" class="sticky-col">Drug</th>
+                    <th rowspan="2" class="sticky-col">NDC/Dosage</th>
             `;
             
             // Add company columns (each company gets multiple sub-columns)
@@ -180,12 +181,13 @@
             headerHTML += `</tr>`;
             tableHead.innerHTML = headerHTML;
 
-            // Build body - one row per drug
+            // Build body - one row per drug+NDC combination
             tableBody.innerHTML = '';
             
             glp1Data.forEach(drug => {
                 const tr = document.createElement('tr');
                 let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
+                rowHTML += `<td class="ndc-dosage sticky-col"><small>${drug.ndc || 'N/A'}</small></td>`;
                 
                 // Add data for each company
                 companies.forEach(company => {
@@ -241,7 +243,7 @@
             const tableBody = document.getElementById(`pricingBody${year}`);
 
             if (!Array.isArray(pricingData) || pricingData.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="22" style="text-align: center; padding: 2rem;">No pricing data available</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="23" style="text-align: center; padding: 2rem;">No pricing data available</td></tr>';
                 return;
             }
 
@@ -251,6 +253,7 @@
             let headerHTML = `
                 <tr>
                     <th rowspan="2" class="sticky-col">Drug</th>
+                    <th rowspan="2" class="sticky-col">NDC/Dosage</th>
             `;
             
             companies.forEach(company => {
@@ -276,6 +279,7 @@
             pricingData.forEach(drug => {
                 const tr = document.createElement('tr');
                 let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
+                rowHTML += `<td class="ndc-dosage sticky-col"><small>${drug.ndc || 'N/A'}</small></td>`;
                 
                 companies.forEach(company => {
                     const companyData = drug.companies[company] || {};
@@ -301,7 +305,7 @@
             const tableBody = document.getElementById(`memberCostBody${year}`);
 
             if (!Array.isArray(memberCostData) || memberCostData.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="36" style="text-align: center; padding: 2rem;">No member cost data available</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="37" style="text-align: center; padding: 2rem;">No member cost data available</td></tr>';
                 return;
             }
 
@@ -311,6 +315,7 @@
             let headerHTML = `
                 <tr>
                     <th rowspan="2" class="sticky-col">Drug</th>
+                    <th rowspan="2" class="sticky-col">NDC/Dosage</th>
             `;
             
             companies.forEach(company => {
@@ -338,6 +343,7 @@
             memberCostData.forEach(drug => {
                 const tr = document.createElement('tr');
                 let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
+                rowHTML += `<td class="ndc-dosage sticky-col"><small>${drug.ndc || 'N/A'}</small></td>`;
                 
                 companies.forEach(company => {
                     const companyData = drug.companies[company] || {};
