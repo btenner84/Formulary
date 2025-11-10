@@ -651,19 +651,37 @@ TARGET_COMPANIES = [
 async def get_glp1_master_table(year: str = "2025"):
     """Get comprehensive GLP-1 coverage analysis for target companies"""
     
-    conn = get_db(year)
-    
-    # Build company filter (case-insensitive)
-    company_filter = " OR ".join([
-        f"UPPER(p.contract_name) LIKE '%{co.upper()}%'" 
-        for co in TARGET_COMPANIES
-    ])
-    
-    results = []
-    
-    for drug_name, rxcui in GLP1_DRUGS.items():
-        # Get total formularies and plans per company
-        query = f"""
+    try:
+        conn = get_db(year)
+        
+        # First, verify we can find the drugs at all
+        test_rxcui = list(GLP1_DRUGS.values())[0]
+        test_count = conn.execute(f"""
+            SELECT COUNT(*) as cnt 
+            FROM formulary_drugs 
+            WHERE CAST(rxcui AS VARCHAR) = '{test_rxcui}'
+        """).fetchone()[0]
+        print(f"🔍 Debug: Found {test_count:,} records for test RXCUI {test_rxcui}")
+        
+        # Build company filter (case-insensitive)
+        company_filter = " OR ".join([
+            f"UPPER(p.contract_name) LIKE '%{co.upper()}%'" 
+            for co in TARGET_COMPANIES
+        ])
+        
+        # Verify company matching
+        company_count = conn.execute(f"""
+            SELECT COUNT(DISTINCT contract_name) as cnt
+            FROM plans
+            WHERE ({company_filter})
+        """).fetchone()[0]
+        print(f"🔍 Debug: Found {company_count} matching companies")
+        
+        results = []
+        
+        for drug_name, rxcui in GLP1_DRUGS.items():
+            # Get total formularies and plans per company
+            query = f"""
             WITH company_plans AS (
                 SELECT DISTINCT
                     p.contract_name,
@@ -678,13 +696,13 @@ async def get_glp1_master_table(year: str = "2025"):
                     cp.contract_name,
                     cp.formulary_id,
                     cp.plan_id,
-                    fd.tier_level_value,
+                    CAST(fd.tier_level_value AS VARCHAR) as tier_level_value,
                     fd.prior_authorization_yn,
                     fd.step_therapy_yn,
                     fd.quantity_limit_yn
                 FROM company_plans cp
                 JOIN formulary_drugs fd ON cp.formulary_id = fd.formulary_id
-                WHERE fd.rxcui = '{rxcui}'
+                WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
             ),
             company_totals AS (
                 SELECT 
@@ -699,13 +717,13 @@ async def get_glp1_master_table(year: str = "2025"):
                     dc.contract_name,
                     COUNT(DISTINCT dc.formulary_id) as formularies_with_drug,
                     COUNT(DISTINCT dc.plan_id) as plans_with_drug,
-                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '3' THEN dc.plan_id END) as plans_tier3,
-                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '4' THEN dc.plan_id END) as plans_tier4,
-                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '5' THEN dc.plan_id END) as plans_tier5,
-                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '6' THEN dc.plan_id END) as plans_tier6,
-                    COUNT(DISTINCT CASE WHEN dc.prior_authorization_yn = 'Y' THEN dc.plan_id END) as plans_with_pa,
-                    COUNT(DISTINCT CASE WHEN dc.step_therapy_yn = 'Y' THEN dc.plan_id END) as plans_with_st,
-                    COUNT(DISTINCT CASE WHEN dc.quantity_limit_yn = 'Y' THEN dc.plan_id END) as plans_with_ql
+                    COUNT(DISTINCT CASE WHEN CAST(dc.tier_level_value AS INTEGER) = 3 THEN dc.plan_id END) as plans_tier3,
+                    COUNT(DISTINCT CASE WHEN CAST(dc.tier_level_value AS INTEGER) = 4 THEN dc.plan_id END) as plans_tier4,
+                    COUNT(DISTINCT CASE WHEN CAST(dc.tier_level_value AS INTEGER) = 5 THEN dc.plan_id END) as plans_tier5,
+                    COUNT(DISTINCT CASE WHEN CAST(dc.tier_level_value AS INTEGER) = 6 THEN dc.plan_id END) as plans_tier6,
+                    COUNT(DISTINCT CASE WHEN UPPER(CAST(dc.prior_authorization_yn AS VARCHAR)) = 'Y' THEN dc.plan_id END) as plans_with_pa,
+                    COUNT(DISTINCT CASE WHEN UPPER(CAST(dc.step_therapy_yn AS VARCHAR)) = 'Y' THEN dc.plan_id END) as plans_with_st,
+                    COUNT(DISTINCT CASE WHEN UPPER(CAST(dc.quantity_limit_yn AS VARCHAR)) = 'Y' THEN dc.plan_id END) as plans_with_ql
                 FROM drug_coverage dc
                 GROUP BY dc.contract_name
             )
@@ -734,42 +752,50 @@ async def get_glp1_master_table(year: str = "2025"):
             FROM company_totals ct
             LEFT JOIN drug_stats ds ON ct.contract_name = ds.contract_name
             ORDER BY ct.contract_name
-        """
+            """
+            
+            result = conn.execute(query).fetchdf()
+            
+            # Add drug name to each row
+            result['drug_name'] = drug_name
+            result['rxcui'] = rxcui
+            
+            results.append(result)
         
-        result = conn.execute(query).fetchdf()
+        # Combine all drugs
+        combined = pd.concat(results, ignore_index=True)
+    
+        # Replace NaN with 0 for counts, None for strings
+        combined = combined.fillna({
+            'formularies_with_drug': 0,
+            'plans_with_drug': 0,
+            'formulary_pct': 0,
+            'plan_pct': 0,
+            'tier3_count': 0,
+            'tier4_count': 0,
+            'tier5_count': 0,
+            'tier6_count': 0,
+            'tier3_pct': 0,
+            'tier4_pct': 0,
+            'tier5_pct': 0,
+            'tier6_pct': 0,
+            'pa_count': 0,
+            'st_count': 0,
+            'ql_count': 0,
+            'pa_pct': 0,
+            'st_pct': 0,
+            'ql_pct': 0
+        })
         
-        # Add drug name to each row
-        result['drug_name'] = drug_name
-        result['rxcui'] = rxcui
-        
-        results.append(result)
-    
-    # Combine all drugs
-    combined = pd.concat(results, ignore_index=True)
-    
-    # Replace NaN with 0 for counts, None for strings
-    combined = combined.fillna({
-        'formularies_with_drug': 0,
-        'plans_with_drug': 0,
-        'formulary_pct': 0,
-        'plan_pct': 0,
-        'tier3_count': 0,
-        'tier4_count': 0,
-        'tier5_count': 0,
-        'tier6_count': 0,
-        'tier3_pct': 0,
-        'tier4_pct': 0,
-        'tier5_pct': 0,
-        'tier6_pct': 0,
-        'pa_count': 0,
-        'st_count': 0,
-        'ql_count': 0,
-        'pa_pct': 0,
-        'st_pct': 0,
-        'ql_pct': 0
-    })
-    
-    return combined.to_dict(orient='records')
+        return combined.to_dict(orient='records')
+    except Exception as e:
+        import traceback
+        error_msg = f"Error in get_glp1_master_table: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "details": error_msg}
+        )
 
 @app.get("/api/glp1/companies")
 async def get_glp1_companies(year: str = "2025"):
