@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GLP-1 Analysis - Medicare Part D Intelligence</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="navbar-content">
+            <a href="/" class="navbar-brand">
+                💊 Medicare Part D <span>Intelligence</span>
+            </a>
+            <div class="navbar-views">
+                <a href="/" class="nav-view-link">Main View</a>
+                <a href="/glp1" class="nav-view-link active">GLP-1 Analysis</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container">
+
+        <!-- Year Toggle -->
+        <div class="year-toggle-container">
+            <span class="year-label">Data Year:</span>
+            <div class="year-toggle">
+                <button class="year-btn active" data-year="2025" onclick="loadGLP1Data('2025')">2025</button>
+                <button class="year-btn" data-year="2026" onclick="loadGLP1Data('2026')">2026</button>
+            </div>
+        </div>
+
+        <!-- Page Header -->
+        <div class="page-header">
+            <h1>💊 GLP-1 Drug Coverage Analysis</h1>
+            <p>Comprehensive comparison of GLP-1 coverage across target companies: Elevance, UnitedHealth, Humana, CVS, Molina, Centene, and Alignment</p>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="loading">
+            <div class="spinner"></div>
+            <p>Loading GLP-1 analysis data...</p>
+        </div>
+
+        <!-- Master Table Container -->
+        <div id="masterTableContainer" style="display: none;">
+            <!-- Summary Stats -->
+            <div class="stats-grid" id="summaryStats"></div>
+
+            <!-- Master Table -->
+            <div class="table-container">
+                <div class="table-header">
+                    <h2>Master Comparison Table</h2>
+                    <p>Coverage, Tier Distribution, and Restrictions by Drug and Company</p>
+                </div>
+                <div class="table-wrapper">
+                    <table id="masterTable" class="master-table">
+                        <thead id="tableHead"></thead>
+                        <tbody id="tableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentYear = '2025';
+        let glp1Data = [];
+
+        // Load GLP-1 data
+        async function loadGLP1Data(year) {
+            currentYear = year;
+            
+            // Update active year button
+            document.querySelectorAll('.year-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.year === year) {
+                    btn.classList.add('active');
+                }
+            });
+
+            // Show loading
+            document.getElementById('loadingState').style.display = 'block';
+            document.getElementById('masterTableContainer').style.display = 'none';
+
+            try {
+                const response = await fetch(`/api/glp1/master-table?year=${year}`);
+                glp1Data = await response.json();
+                
+                renderMasterTable();
+                renderSummaryStats();
+                
+                document.getElementById('loadingState').style.display = 'none';
+                document.getElementById('masterTableContainer').style.display = 'block';
+            } catch (error) {
+                console.error('Error loading GLP-1 data:', error);
+                document.getElementById('loadingState').innerHTML = 
+                    '<p style="color: #ef4444;">Error loading data. Please try again.</p>';
+            }
+        }
+
+        // Render summary statistics
+        function renderSummaryStats() {
+            const statsContainer = document.getElementById('summaryStats');
+            
+            // Calculate totals
+            const totalCompanies = new Set(glp1Data.map(d => d.contract_name)).size;
+            const totalDrugs = new Set(glp1Data.map(d => d.drug_name)).size;
+            
+            // Calculate average coverage
+            const avgCoverage = glp1Data
+                .filter(d => d.plans_with_drug > 0)
+                .reduce((sum, d) => sum + (d.plan_pct || 0), 0) / 
+                glp1Data.filter(d => d.plans_with_drug > 0).length || 0;
+
+            statsContainer.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">Target Companies</div>
+                    <div class="stat-value">${totalCompanies}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">GLP-1 Drugs Analyzed</div>
+                    <div class="stat-value">${totalDrugs}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg Plan Coverage</div>
+                    <div class="stat-value">${avgCoverage.toFixed(1)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Data Year</div>
+                    <div class="stat-value">${currentYear}</div>
+                </div>
+            `;
+        }
+
+        // Render master table
+        function renderMasterTable() {
+            const tableHead = document.getElementById('tableHead');
+            const tableBody = document.getElementById('tableBody');
+
+            // Get unique companies and drugs
+            const companies = [...new Set(glp1Data.map(d => d.contract_name))].sort();
+            const drugs = ['Ozempic', 'Wegovy', 'Rybelsus', 'Mounjaro', 'Trulicity', 'Victoza'];
+
+            // Build header
+            tableHead.innerHTML = `
+                <tr>
+                    <th rowspan="2" class="sticky-col">Drug</th>
+                    <th rowspan="2" class="sticky-col">Company</th>
+                    <th colspan="2" class="section-header">Coverage</th>
+                    <th colspan="8" class="section-header">Tier Distribution</th>
+                    <th colspan="6" class="section-header">Restrictions</th>
+                </tr>
+                <tr>
+                    <!-- Coverage columns -->
+                    <th>Formularies<br><small># / %</small></th>
+                    <th>Plans<br><small># / %</small></th>
+                    <!-- Tier columns -->
+                    <th>Tier 3<br><small># / %</small></th>
+                    <th>Tier 4<br><small># / %</small></th>
+                    <th>Tier 5<br><small># / %</small></th>
+                    <th>Tier 6<br><small># / %</small></th>
+                    <!-- Restrictions columns -->
+                    <th>Prior Auth<br><small># / %</small></th>
+                    <th>Step Therapy<br><small># / %</small></th>
+                    <th>Qty Limit<br><small># / %</small></th>
+                </tr>
+            `;
+
+            // Build body - one row per drug per company
+            tableBody.innerHTML = '';
+            
+            drugs.forEach(drug => {
+                const drugRows = glp1Data.filter(d => d.drug_name === drug);
+                
+                drugRows.forEach((row, idx) => {
+                    const tr = document.createElement('tr');
+                    if (idx === 0) {
+                        tr.innerHTML = `
+                            <td rowspan="${drugRows.length}" class="drug-name sticky-col">${drug}</td>
+                            <td class="company-name sticky-col">${row.contract_name || 'N/A'}</td>
+                            <td class="coverage-cell">
+                                <strong>${row.formularies_with_drug || 0}</strong><br>
+                                <small>${(row.formulary_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="coverage-cell">
+                                <strong>${row.plans_with_drug || 0}</strong><br>
+                                <small>${(row.plan_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier3">
+                                <strong>${row.tier3_count || 0}</strong><br>
+                                <small>${(row.tier3_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier4">
+                                <strong>${row.tier4_count || 0}</strong><br>
+                                <small>${(row.tier4_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier5">
+                                <strong>${row.tier5_count || 0}</strong><br>
+                                <small>${(row.tier5_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier6">
+                                <strong>${row.tier6_count || 0}</strong><br>
+                                <small>${(row.tier6_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="restriction-cell">
+                                <strong>${row.pa_count || 0}</strong><br>
+                                <small>${(row.pa_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="restriction-cell">
+                                <strong>${row.st_count || 0}</strong><br>
+                                <small>${(row.st_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="restriction-cell">
+                                <strong>${row.ql_count || 0}</strong><br>
+                                <small>${(row.ql_pct || 0).toFixed(1)}%</small>
+                            </td>
+                        `;
+                    } else {
+                        tr.innerHTML = `
+                            <td class="company-name sticky-col">${row.contract_name || 'N/A'}</td>
+                            <td class="coverage-cell">
+                                <strong>${row.formularies_with_drug || 0}</strong><br>
+                                <small>${(row.formulary_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="coverage-cell">
+                                <strong>${row.plans_with_drug || 0}</strong><br>
+                                <small>${(row.plan_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier3">
+                                <strong>${row.tier3_count || 0}</strong><br>
+                                <small>${(row.tier3_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier4">
+                                <strong>${row.tier4_count || 0}</strong><br>
+                                <small>${(row.tier4_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier5">
+                                <strong>${row.tier5_count || 0}</strong><br>
+                                <small>${(row.tier5_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="tier-cell tier6">
+                                <strong>${row.tier6_count || 0}</strong><br>
+                                <small>${(row.tier6_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="restriction-cell">
+                                <strong>${row.pa_count || 0}</strong><br>
+                                <small>${(row.pa_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="restriction-cell">
+                                <strong>${row.st_count || 0}</strong><br>
+                                <small>${(row.st_pct || 0).toFixed(1)}%</small>
+                            </td>
+                            <td class="restriction-cell">
+                                <strong>${row.ql_count || 0}</strong><br>
+                                <small>${(row.ql_pct || 0).toFixed(1)}%</small>
+                            </td>
+                        `;
+                    }
+                    tableBody.appendChild(tr);
+                });
+            });
+        }
+
+        // Initialize
+        loadGLP1Data('2025');
+    </script>
+
+    <style>
+        .table-container {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 2rem;
+            margin-top: 2rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .table-header {
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid #3b82f6;
+        }
+
+        .table-header h2 {
+            color: #1e40af;
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .table-header p {
+            color: #64748b;
+            font-size: 0.95rem;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            max-width: 100%;
+        }
+
+        .master-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+            min-width: 1200px;
+        }
+
+        .master-table thead {
+            background: #1e40af;
+            color: white;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .master-table th {
+            padding: 1rem 0.75rem;
+            text-align: center;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .master-table th.section-header {
+            background: #1e3a8a;
+            font-size: 0.7rem;
+        }
+
+        .master-table th.sticky-col {
+            position: sticky;
+            left: 0;
+            background: #1e40af;
+            z-index: 11;
+        }
+
+        .master-table td {
+            padding: 0.875rem 0.75rem;
+            text-align: center;
+            border: 1px solid #e2e8f0;
+            background: white;
+        }
+
+        .master-table td.sticky-col {
+            position: sticky;
+            left: 0;
+            background: white;
+            z-index: 5;
+            font-weight: 600;
+        }
+
+        .master-table tbody tr:hover {
+            background: #f8fafc;
+        }
+
+        .master-table tbody tr:hover td.sticky-col {
+            background: #f1f5f9;
+        }
+
+        .drug-name {
+            color: #1e40af;
+            font-weight: 700;
+            font-size: 0.95rem;
+            vertical-align: middle;
+        }
+
+        .company-name {
+            color: #1e293b;
+            font-weight: 600;
+            text-align: left;
+            padding-left: 1rem;
+        }
+
+        .coverage-cell {
+            font-weight: 600;
+        }
+
+        .coverage-cell strong {
+            color: #2563eb;
+            font-size: 1rem;
+        }
+
+        .coverage-cell small {
+            color: #64748b;
+            font-size: 0.75rem;
+        }
+
+        .tier-cell {
+            font-weight: 500;
+        }
+
+        .tier-cell strong {
+            color: #1e293b;
+        }
+
+        .tier-cell.tier3 strong {
+            color: #10b981;
+        }
+
+        .tier-cell.tier4 strong {
+            color: #f59e0b;
+        }
+
+        .tier-cell.tier5 strong,
+        .tier-cell.tier6 strong {
+            color: #ef4444;
+        }
+
+        .restriction-cell {
+            font-weight: 500;
+        }
+
+        .restriction-cell strong {
+            color: #dc2626;
+        }
+
+        .restriction-cell small {
+            color: #64748b;
+        }
+
+        @media (max-width: 1400px) {
+            .table-wrapper {
+                overflow-x: scroll;
+            }
+        }
+    </style>
+</body>
+</html>
+

@@ -24,7 +24,26 @@ templates = Jinja2Templates(directory=str(templates_dir))
 # S3 Configuration
 S3_BUCKET = os.getenv("S3_BUCKET", "formulary2026")
 S3_PREFIX = os.getenv("S3_PREFIX", "medicare_parquet")
-USE_S3 = os.getenv("USE_S3", "true").lower() == "true"
+
+# Auto-detect: Use S3 if AWS credentials are available, otherwise use local
+AWS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET = os.getenv("AWS_SECRET_ACCESS_KEY")
+USE_S3_ENV = os.getenv("USE_S3", "").lower()
+
+# Determine if we should use S3
+# If explicitly set to "true", require credentials (production mode)
+# If explicitly set to "false", use local
+# If not set, auto-detect based on credentials
+if USE_S3_ENV == "false":
+    USE_S3 = False
+    USE_S3_EXPLICIT = False
+elif USE_S3_ENV == "true":
+    USE_S3 = True
+    USE_S3_EXPLICIT = True  # Explicitly requested - require credentials
+else:
+    # Auto-detect: Use S3 if credentials available
+    USE_S3 = bool(AWS_KEY and AWS_SECRET)
+    USE_S3_EXPLICIT = False
 
 # Local fallback (BASE_DIR already defined above)
 LOCAL_DATA_DIR = BASE_DIR / "medicare_parquet"
@@ -37,29 +56,45 @@ def get_db(year: str = "2025"):
     """
     conn = duckdb.connect(':memory:')
     
+    # Determine data source (check AWS credentials at runtime)
+    use_s3 = USE_S3
+    
+    # If S3 was explicitly requested (production mode), require credentials
+    if USE_S3_EXPLICIT and (not AWS_KEY or not AWS_SECRET):
+        raise ValueError(
+            "USE_S3=true but AWS credentials not found!\n"
+            "Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.\n"
+            "Or set USE_S3=false to use local files."
+        )
+    
+    # If auto-detected S3 but no credentials, fall back to local
+    if use_s3 and (not AWS_KEY or not AWS_SECRET):
+        print("⚠️  S3 auto-detected but AWS credentials not found, falling back to local")
+        use_s3 = False
+    
     # Install and load httpfs extension for S3 access
-    if USE_S3:
-        conn.execute("INSTALL httpfs;")
-        conn.execute("LOAD httpfs;")
-        
-        # Configure S3 credentials
-        conn.execute(f"SET s3_region='us-east-1';")
-        
-        # Set credentials from environment variables (required for production)
-        aws_key = os.getenv("AWS_ACCESS_KEY_ID")
-        aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY")
-        
-        if not aws_key or not aws_secret:
-            raise ValueError("AWS credentials not found in environment variables!")
-        
-        conn.execute(f"SET s3_access_key_id='{aws_key}';")
-        conn.execute(f"SET s3_secret_access_key='{aws_secret}';")
-        
-        # Use S3 paths with year
-        data_path = f"s3://{S3_BUCKET}/{year}"
+    if use_s3:
+        try:
+            conn.execute("INSTALL httpfs;")
+            conn.execute("LOAD httpfs;")
+            
+            # Configure S3 credentials
+            conn.execute(f"SET s3_region='us-east-1';")
+            conn.execute(f"SET s3_access_key_id='{AWS_KEY}';")
+            conn.execute(f"SET s3_secret_access_key='{AWS_SECRET}';")
+            
+            # Use S3 paths with year
+            data_path = f"s3://{S3_BUCKET}/{year}"
+            print(f"📦 Loading data from S3: {data_path}")
+        except Exception as e:
+            print(f"⚠️  S3 connection failed: {e}")
+            print(f"⚠️  Falling back to local files...")
+            use_s3 = False
+            data_path = str(LOCAL_DATA_DIR)
     else:
         # Use local paths
         data_path = str(LOCAL_DATA_DIR)
+        print(f"📁 Loading data from local: {data_path}")
     
     # Load all parquet files
     conn.execute(f"""
@@ -103,12 +138,16 @@ def get_db(year: str = "2025"):
     
     # Load plan enrollment data from Parquet (use 2025 enrollment for both years until 2026 data available)
     try:
-        if USE_S3:
-            conn.execute(f"""
-                CREATE VIEW plan_enrollment AS 
-                SELECT * FROM read_parquet('s3://{S3_BUCKET}/2025/plan_enrollment.parquet')
-            """)
-            print(f"✅ Loaded 2025 enrollment data (using for {year} year)")
+        if use_s3:
+            enrollment_path = f"s3://{S3_BUCKET}/2025/plan_enrollment.parquet"
+        else:
+            enrollment_path = f"{LOCAL_DATA_DIR}/plan_enrollment.parquet"
+        
+        conn.execute(f"""
+            CREATE VIEW plan_enrollment AS 
+            SELECT * FROM read_parquet('{enrollment_path}')
+        """)
+        print(f"✅ Loaded 2025 enrollment data (using for {year} year)")
     except Exception as e:
         print(f"⚠️ Note: plan_enrollment not loaded - {e}")
     
@@ -156,6 +195,13 @@ async def tier_detail(request: Request, formulary_id: str, tier: str):
         "request": request,
         "formulary_id": formulary_id,
         "tier": tier
+    })
+
+@app.get("/glp1")
+async def glp1_analysis(request: Request):
+    """GLP-1 Analysis page"""
+    return templates.TemplateResponse("glp1.html", {
+        "request": request
     })
 
 # ============================================================================
@@ -510,13 +556,15 @@ async def get_tier_drugs_with_pricing(formulary_id: str, tier: str, year: str = 
                 bc.tier,
                 bc.cost_type_pref as cost_type,
                 bc.cost_amt_pref as cost_amt,
-                bc.tier_specialty_yn
+                bc.tier_specialty_yn,
+                bc.pharmacy_type_pref as pharmacy_type
             FROM beneficiary_costs bc
             JOIN plans p ON bc.plan_key = p.plan_key
             WHERE p.formulary_id = '{formulary_id}'
               AND bc.coverage_level = '1'
               AND bc.tier = '{tier}'
-            ORDER BY CAST(bc.cost_amt_pref AS DOUBLE) DESC
+              AND bc.pharmacy_type_pref = '1'
+            ORDER BY CAST(bc.cost_amt_pref AS DOUBLE) ASC
             LIMIT 1
         )
         SELECT 
@@ -573,6 +621,188 @@ async def get_global_stats(year: str = "2025"):
     }
     
     return stats
+
+# ============================================================================
+# GLP-1 ANALYSIS ENDPOINTS
+# ============================================================================
+
+# GLP-1 Drug RXCUI mappings
+GLP1_DRUGS = {
+    'Ozempic': '1998261',
+    'Wegovy': '1998262',
+    'Rybelsus': '1998263',
+    'Mounjaro': '2602652',
+    'Trulicity': '1531296',
+    'Victoza': '1531297'
+}
+
+# Target companies (case-insensitive matching)
+TARGET_COMPANIES = [
+    'Elevance',
+    'UnitedHealth',
+    'Humana',
+    'CVS',
+    'Molina',
+    'Centene',
+    'Alignment'
+]
+
+@app.get("/api/glp1/master-table")
+async def get_glp1_master_table(year: str = "2025"):
+    """Get comprehensive GLP-1 coverage analysis for target companies"""
+    
+    conn = get_db(year)
+    
+    # Build company filter (case-insensitive)
+    company_filter = " OR ".join([
+        f"UPPER(p.contract_name) LIKE '%{co.upper()}%'" 
+        for co in TARGET_COMPANIES
+    ])
+    
+    results = []
+    
+    for drug_name, rxcui in GLP1_DRUGS.items():
+        # Get total formularies and plans per company
+        query = f"""
+            WITH company_plans AS (
+                SELECT DISTINCT
+                    p.contract_name,
+                    p.formulary_id,
+                    p.plan_id,
+                    p.contract_id
+                FROM plans p
+                WHERE ({company_filter})
+            ),
+            drug_coverage AS (
+                SELECT DISTINCT
+                    cp.contract_name,
+                    cp.formulary_id,
+                    cp.plan_id,
+                    fd.tier_level_value,
+                    fd.prior_authorization_yn,
+                    fd.step_therapy_yn,
+                    fd.quantity_limit_yn
+                FROM company_plans cp
+                JOIN formulary_drugs fd ON cp.formulary_id = fd.formulary_id
+                WHERE fd.rxcui = '{rxcui}'
+            ),
+            company_totals AS (
+                SELECT 
+                    contract_name,
+                    COUNT(DISTINCT formulary_id) as total_formularies,
+                    COUNT(DISTINCT plan_id) as total_plans
+                FROM company_plans
+                GROUP BY contract_name
+            ),
+            drug_stats AS (
+                SELECT 
+                    dc.contract_name,
+                    COUNT(DISTINCT dc.formulary_id) as formularies_with_drug,
+                    COUNT(DISTINCT dc.plan_id) as plans_with_drug,
+                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '3' THEN dc.plan_id END) as plans_tier3,
+                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '4' THEN dc.plan_id END) as plans_tier4,
+                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '5' THEN dc.plan_id END) as plans_tier5,
+                    COUNT(DISTINCT CASE WHEN dc.tier_level_value = '6' THEN dc.plan_id END) as plans_tier6,
+                    COUNT(DISTINCT CASE WHEN dc.prior_authorization_yn = 'Y' THEN dc.plan_id END) as plans_with_pa,
+                    COUNT(DISTINCT CASE WHEN dc.step_therapy_yn = 'Y' THEN dc.plan_id END) as plans_with_st,
+                    COUNT(DISTINCT CASE WHEN dc.quantity_limit_yn = 'Y' THEN dc.plan_id END) as plans_with_ql
+                FROM drug_coverage dc
+                GROUP BY dc.contract_name
+            )
+            SELECT 
+                ct.contract_name,
+                ct.total_formularies,
+                ct.total_plans,
+                COALESCE(ds.formularies_with_drug, 0) as formularies_with_drug,
+                COALESCE(ds.plans_with_drug, 0) as plans_with_drug,
+                ROUND(COALESCE(ds.formularies_with_drug, 0) * 100.0 / NULLIF(ct.total_formularies, 0), 1) as formulary_pct,
+                ROUND(COALESCE(ds.plans_with_drug, 0) * 100.0 / NULLIF(ct.total_plans, 0), 1) as plan_pct,
+                COALESCE(ds.plans_tier3, 0) as tier3_count,
+                COALESCE(ds.plans_tier4, 0) as tier4_count,
+                COALESCE(ds.plans_tier5, 0) as tier5_count,
+                COALESCE(ds.plans_tier6, 0) as tier6_count,
+                ROUND(COALESCE(ds.plans_tier3, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as tier3_pct,
+                ROUND(COALESCE(ds.plans_tier4, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as tier4_pct,
+                ROUND(COALESCE(ds.plans_tier5, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as tier5_pct,
+                ROUND(COALESCE(ds.plans_tier6, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as tier6_pct,
+                COALESCE(ds.plans_with_pa, 0) as pa_count,
+                COALESCE(ds.plans_with_st, 0) as st_count,
+                COALESCE(ds.plans_with_ql, 0) as ql_count,
+                ROUND(COALESCE(ds.plans_with_pa, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as pa_pct,
+                ROUND(COALESCE(ds.plans_with_st, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as st_pct,
+                ROUND(COALESCE(ds.plans_with_ql, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as ql_pct
+            FROM company_totals ct
+            LEFT JOIN drug_stats ds ON ct.contract_name = ds.contract_name
+            ORDER BY ct.contract_name
+        """
+        
+        result = conn.execute(query).fetchdf()
+        
+        # Add drug name to each row
+        result['drug_name'] = drug_name
+        result['rxcui'] = rxcui
+        
+        results.append(result)
+    
+    # Combine all drugs
+    combined = pd.concat(results, ignore_index=True)
+    
+    # Replace NaN with 0 for counts, None for strings
+    combined = combined.fillna({
+        'formularies_with_drug': 0,
+        'plans_with_drug': 0,
+        'formulary_pct': 0,
+        'plan_pct': 0,
+        'tier3_count': 0,
+        'tier4_count': 0,
+        'tier5_count': 0,
+        'tier6_count': 0,
+        'tier3_pct': 0,
+        'tier4_pct': 0,
+        'tier5_pct': 0,
+        'tier6_pct': 0,
+        'pa_count': 0,
+        'st_count': 0,
+        'ql_count': 0,
+        'pa_pct': 0,
+        'st_pct': 0,
+        'ql_pct': 0
+    })
+    
+    return combined.to_dict(orient='records')
+
+@app.get("/api/glp1/companies")
+async def get_glp1_companies(year: str = "2025"):
+    """Get list of target companies with their totals"""
+    
+    try:
+        conn = get_db(year)
+        
+        company_filter = " OR ".join([
+            f"UPPER(contract_name) LIKE '%{co.upper()}%'" 
+            for co in TARGET_COMPANIES
+        ])
+        
+        result = conn.execute(f"""
+            SELECT 
+                contract_name,
+                COUNT(DISTINCT formulary_id) as total_formularies,
+                COUNT(DISTINCT plan_id) as total_plans
+            FROM plans
+            WHERE ({company_filter})
+            GROUP BY contract_name
+            ORDER BY contract_name
+        """).fetchdf()
+        
+        return result.to_dict(orient='records')
+    except Exception as e:
+        import traceback
+        error_msg = f"Error in get_glp1_companies: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "details": error_msg}
+        )
 
 # ============================================================================
 # HEALTH CHECK
