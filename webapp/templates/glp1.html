@@ -66,11 +66,77 @@
                 </div>
             </div>
         </div>
+
+        <!-- 2025 Pricing Tables -->
+        <div id="pricingTables2025" style="display: none;">
+            <!-- Negotiated Rates Table -->
+            <div class="table-container" style="margin-top: 3rem;">
+                <div class="table-header">
+                    <h2>2025 Negotiated Rates (Plan's Wholesale Cost)</h2>
+                    <p>Average unit cost per 30-day supply by drug and company</p>
+                </div>
+                <div class="table-wrapper">
+                    <table id="pricingTable2025" class="master-table">
+                        <thead id="pricingHead2025"></thead>
+                        <tbody id="pricingBody2025"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Member Cost-Sharing Table -->
+            <div class="table-container" style="margin-top: 3rem;">
+                <div class="table-header">
+                    <h2>2025 Member Cost-Sharing</h2>
+                    <p>Copay ($) and Coinsurance (%) by drug and company</p>
+                </div>
+                <div class="table-wrapper">
+                    <table id="memberCostTable2025" class="master-table">
+                        <thead id="memberCostHead2025"></thead>
+                        <tbody id="memberCostBody2025"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2026 Pricing Tables -->
+        <div id="pricingTables2026" style="display: none;">
+            <!-- Negotiated Rates Table -->
+            <div class="table-container" style="margin-top: 3rem;">
+                <div class="table-header">
+                    <h2>2026 Negotiated Rates (Plan's Wholesale Cost)</h2>
+                    <p>Average unit cost per 30-day supply by drug and company</p>
+                </div>
+                <div class="table-wrapper">
+                    <table id="pricingTable2026" class="master-table">
+                        <thead id="pricingHead2026"></thead>
+                        <tbody id="pricingBody2026"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Member Cost-Sharing Table -->
+            <div class="table-container" style="margin-top: 3rem;">
+                <div class="table-header">
+                    <h2>2026 Member Cost-Sharing</h2>
+                    <p>Copay ($) and Coinsurance (%) by drug and company</p>
+                </div>
+                <div class="table-wrapper">
+                    <table id="memberCostTable2026" class="master-table">
+                        <thead id="memberCostHead2026"></thead>
+                        <tbody id="memberCostBody2026"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
         let glp1Data2025 = [];
         let glp1Data2026 = [];
+        let pricingData2025 = [];
+        let pricingData2026 = [];
+        let memberCostData2025 = [];
+        let memberCostData2026 = [];
 
         // Load GLP-1 data for both years
         async function loadGLP1Data() {
@@ -78,28 +144,50 @@
             document.getElementById('loadingState').style.display = 'block';
             document.getElementById('masterTableContainer2025').style.display = 'none';
             document.getElementById('masterTableContainer2026').style.display = 'none';
+            document.getElementById('pricingTables2025').style.display = 'none';
+            document.getElementById('pricingTables2026').style.display = 'none';
 
             try {
                 // Load 2025 data
-                const response2025 = await fetch('/api/glp1/master-table?year=2025');
-                if (response2025.ok) {
-                    const data2025 = await response2025.json();
-                    glp1Data2025 = Array.isArray(data2025) ? data2025 : [];
-                    if (glp1Data2025.length > 0) {
-                        renderMasterTable('2025', glp1Data2025);
-                        document.getElementById('masterTableContainer2025').style.display = 'block';
-                    }
+                const [master2025, pricing2025, costs2025] = await Promise.all([
+                    fetch('/api/glp1/master-table?year=2025').then(r => r.ok ? r.json() : []),
+                    fetch('/api/glp1/pricing?year=2025').then(r => r.ok ? r.json() : []),
+                    fetch('/api/glp1/member-costs?year=2025').then(r => r.ok ? r.json() : [])
+                ]);
+
+                glp1Data2025 = Array.isArray(master2025) ? master2025 : [];
+                pricingData2025 = Array.isArray(pricing2025) ? pricing2025 : [];
+                memberCostData2025 = Array.isArray(costs2025) ? costs2025 : [];
+
+                if (glp1Data2025.length > 0) {
+                    renderMasterTable('2025', glp1Data2025);
+                    document.getElementById('masterTableContainer2025').style.display = 'block';
+                }
+                if (pricingData2025.length > 0 || memberCostData2025.length > 0) {
+                    renderPricingTable('2025', pricingData2025);
+                    renderMemberCostTable('2025', memberCostData2025);
+                    document.getElementById('pricingTables2025').style.display = 'block';
                 }
 
                 // Load 2026 data
-                const response2026 = await fetch('/api/glp1/master-table?year=2026');
-                if (response2026.ok) {
-                    const data2026 = await response2026.json();
-                    glp1Data2026 = Array.isArray(data2026) ? data2026 : [];
-                    if (glp1Data2026.length > 0) {
-                        renderMasterTable('2026', glp1Data2026);
-                        document.getElementById('masterTableContainer2026').style.display = 'block';
-                    }
+                const [master2026, pricing2026, costs2026] = await Promise.all([
+                    fetch('/api/glp1/master-table?year=2026').then(r => r.ok ? r.json() : []),
+                    fetch('/api/glp1/pricing?year=2026').then(r => r.ok ? r.json() : []),
+                    fetch('/api/glp1/member-costs?year=2026').then(r => r.ok ? r.json() : [])
+                ]);
+
+                glp1Data2026 = Array.isArray(master2026) ? master2026 : [];
+                pricingData2026 = Array.isArray(pricing2026) ? pricing2026 : [];
+                memberCostData2026 = Array.isArray(costs2026) ? costs2026 : [];
+
+                if (glp1Data2026.length > 0) {
+                    renderMasterTable('2026', glp1Data2026);
+                    document.getElementById('masterTableContainer2026').style.display = 'block';
+                }
+                if (pricingData2026.length > 0 || memberCostData2026.length > 0) {
+                    renderPricingTable('2026', pricingData2026);
+                    renderMemberCostTable('2026', memberCostData2026);
+                    document.getElementById('pricingTables2026').style.display = 'block';
                 }
 
                 // Hide loading
@@ -205,6 +293,136 @@
                         <td class="restriction-cell">
                             <strong>${companyData.ql_count || 0}</strong><br>
                             <small>${(companyData.ql_pct || 0).toFixed(1)}%</small>
+                        </td>
+                    `;
+                });
+                
+                tr.innerHTML = rowHTML;
+                tableBody.appendChild(tr);
+            });
+        }
+
+        // Render pricing table - Negotiated rates
+        function renderPricingTable(year, pricingData) {
+            const tableHead = document.getElementById(`pricingHead${year}`);
+            const tableBody = document.getElementById(`pricingBody${year}`);
+
+            if (!Array.isArray(pricingData) || pricingData.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="22" style="text-align: center; padding: 2rem;">No pricing data available</td></tr>';
+                return;
+            }
+
+            const companies = ['Elevance', 'UnitedHealth', 'Humana', 'CVS', 'Molina', 'Centene', 'Alignment'];
+            
+            // Build header
+            let headerHTML = `
+                <tr>
+                    <th rowspan="2" class="sticky-col">Drug</th>
+            `;
+            
+            companies.forEach(company => {
+                headerHTML += `<th colspan="3" class="company-header">${company}</th>`;
+            });
+            
+            headerHTML += `</tr><tr>`;
+            
+            companies.forEach(() => {
+                headerHTML += `
+                    <th>Avg Cost<br><small>$</small></th>
+                    <th>Min Cost<br><small>$</small></th>
+                    <th>Max Cost<br><small>$</small></th>
+                `;
+            });
+            
+            headerHTML += `</tr>`;
+            tableHead.innerHTML = headerHTML;
+
+            // Build body
+            tableBody.innerHTML = '';
+            
+            pricingData.forEach(drug => {
+                const tr = document.createElement('tr');
+                let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
+                
+                companies.forEach(company => {
+                    const companyData = drug.companies[company] || {};
+                    const avg = companyData.avg_unit_cost || 0;
+                    const min = companyData.min_unit_cost || 0;
+                    const max = companyData.max_unit_cost || 0;
+                    
+                    rowHTML += `
+                        <td class="pricing-cell">${avg > 0 ? '$' + avg.toFixed(2) : 'N/A'}</td>
+                        <td class="pricing-cell">${min > 0 ? '$' + min.toFixed(2) : 'N/A'}</td>
+                        <td class="pricing-cell">${max > 0 ? '$' + max.toFixed(2) : 'N/A'}</td>
+                    `;
+                });
+                
+                tr.innerHTML = rowHTML;
+                tableBody.appendChild(tr);
+            });
+        }
+
+        // Render member cost table - Copay and Coinsurance
+        function renderMemberCostTable(year, memberCostData) {
+            const tableHead = document.getElementById(`memberCostHead${year}`);
+            const tableBody = document.getElementById(`memberCostBody${year}`);
+
+            if (!Array.isArray(memberCostData) || memberCostData.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="36" style="text-align: center; padding: 2rem;">No member cost data available</td></tr>';
+                return;
+            }
+
+            const companies = ['Elevance', 'UnitedHealth', 'Humana', 'CVS', 'Molina', 'Centene', 'Alignment'];
+            
+            // Build header
+            let headerHTML = `
+                <tr>
+                    <th rowspan="2" class="sticky-col">Drug</th>
+            `;
+            
+            companies.forEach(company => {
+                headerHTML += `<th colspan="5" class="company-header">${company}</th>`;
+            });
+            
+            headerHTML += `</tr><tr>`;
+            
+            companies.forEach(() => {
+                headerHTML += `
+                    <th>Copay<br><small># / %</small></th>
+                    <th>Avg Copay<br><small>$</small></th>
+                    <th>Coinsurance<br><small># / %</small></th>
+                    <th>Avg %<br><small>%</small></th>
+                    <th>No Charge<br><small># / %</small></th>
+                `;
+            });
+            
+            headerHTML += `</tr>`;
+            tableHead.innerHTML = headerHTML;
+
+            // Build body
+            tableBody.innerHTML = '';
+            
+            memberCostData.forEach(drug => {
+                const tr = document.createElement('tr');
+                let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
+                
+                companies.forEach(company => {
+                    const companyData = drug.companies[company] || {};
+                    
+                    rowHTML += `
+                        <td class="cost-cell">
+                            <strong>${companyData.copay_plans || 0}</strong><br>
+                            <small>${(companyData.copay_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="cost-cell">${companyData.avg_copay > 0 ? '$' + companyData.avg_copay.toFixed(2) : 'N/A'}</td>
+                        <td class="cost-cell">
+                            <strong>${companyData.coinsurance_plans || 0}</strong><br>
+                            <small>${(companyData.coinsurance_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="cost-cell">${companyData.avg_coinsurance > 0 ? companyData.avg_coinsurance.toFixed(1) + '%' : 'N/A'}</td>
+                        <td class="cost-cell">
+                            <strong>${companyData.no_charge_plans || 0}</strong><br>
+                            <small>${(companyData.no_charge_pct || 0).toFixed(1)}%</small>
                         </td>
                     `;
                 });

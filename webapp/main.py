@@ -974,6 +974,404 @@ async def get_glp1_master_table(year: str = "2025"):
         logging.error(error_msg)
         return []
 
+@app.get("/api/glp1/pricing")
+async def get_glp1_pricing(year: str = "2025"):
+    """Get negotiated rates (plan's wholesale cost) for GLP-1 drugs by company"""
+    
+    try:
+        conn = get_db(year)
+        
+        # Get parent organization mapping
+        org_filter = " OR ".join([
+            f"UPPER(COALESCE(pe.parent_organization, p.contract_name)) LIKE '%{co.upper()}%'" 
+            for co in TARGET_COMPANIES
+        ])
+        
+        org_mapping_df = conn.execute(f"""
+            SELECT DISTINCT
+                COALESCE(pe.parent_organization, p.contract_name) as parent_org,
+                p.contract_id
+            FROM plans p
+            LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+            WHERE ({org_filter})
+        """).fetchdf()
+        
+        def normalize_org(org_name):
+            if not org_name:
+                return None
+            org_upper = org_name.upper()
+            for target in TARGET_COMPANIES:
+                if target.upper() in org_upper:
+                    return target
+            return None
+        
+        org_mapping_df['normalized_org'] = org_mapping_df['parent_org'].apply(normalize_org)
+        valid_contracts = org_mapping_df[org_mapping_df['normalized_org'].notna()]['contract_id'].unique().tolist()
+        
+        if not valid_contracts:
+            return []
+        
+        contract_list = ','.join([f"'{c}'" for c in valid_contracts])
+        
+        results = []
+        
+        for drug_name, rxcui in GLP1_DRUGS.items():
+            # Get NDC for this drug
+            ndc_result = conn.execute(f"""
+                SELECT DISTINCT ndc
+                FROM formulary_drugs
+                WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
+                LIMIT 1
+            """).fetchone()
+            
+            if not ndc_result:
+                continue
+            
+            ndc = ndc_result[0]
+            
+            # Get pricing by normalized company
+            query = f"""
+            WITH company_plans AS (
+                SELECT DISTINCT
+                    p.contract_id,
+                    p.plan_key,
+                    COALESCE(pe.parent_organization, p.contract_name) as parent_org
+                FROM plans p
+                LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+                WHERE p.contract_id IN ({contract_list})
+            ),
+            normalized_plans AS (
+                SELECT 
+                    cp.*,
+                    CASE 
+                        WHEN UPPER(cp.parent_org) LIKE '%ELEVANCE%' THEN 'Elevance'
+                        WHEN UPPER(cp.parent_org) LIKE '%UNITEDHEALTH%' OR UPPER(cp.parent_org) LIKE '%UNITED HEALTH%' THEN 'UnitedHealth'
+                        WHEN UPPER(cp.parent_org) LIKE '%HUMANA%' THEN 'Humana'
+                        WHEN UPPER(cp.parent_org) LIKE '%CVS%' OR UPPER(cp.parent_org) LIKE '%AETNA%' THEN 'CVS'
+                        WHEN UPPER(cp.parent_org) LIKE '%MOLINA%' THEN 'Molina'
+                        WHEN UPPER(cp.parent_org) LIKE '%CENTENE%' THEN 'Centene'
+                        WHEN UPPER(cp.parent_org) LIKE '%ALIGNMENT%' THEN 'Alignment'
+                        ELSE NULL
+                    END as normalized_org
+                FROM company_plans cp
+                WHERE cp.parent_org IS NOT NULL
+            ),
+            pricing_data AS (
+                SELECT 
+                    np.normalized_org,
+                    dp.unit_cost,
+                    dp.days_supply
+                FROM normalized_plans np
+                JOIN drug_pricing dp ON np.plan_key = dp.plan_key
+                WHERE dp.ndc = '{ndc}'
+                  AND np.normalized_org IS NOT NULL
+            )
+            SELECT 
+                normalized_org as company,
+                days_supply,
+                COUNT(*) as plan_count,
+                AVG(CAST(unit_cost AS DOUBLE)) as avg_unit_cost,
+                MIN(CAST(unit_cost AS DOUBLE)) as min_unit_cost,
+                MAX(CAST(unit_cost AS DOUBLE)) as max_unit_cost
+            FROM pricing_data
+            WHERE normalized_org IS NOT NULL
+            GROUP BY normalized_org, days_supply
+            ORDER BY normalized_org, days_supply
+            """
+            
+            try:
+                result = conn.execute(query).fetchdf()
+                
+                if result.empty:
+                    continue
+                
+                # Pivot by company
+                drug_row = {
+                    'drug_name': drug_name,
+                    'rxcui': rxcui,
+                    'companies': {}
+                }
+                
+                for company in TARGET_COMPANIES:
+                    company_data = result[result['company'] == company]
+                    if not company_data.empty:
+                        # Get 30-day supply pricing (most common)
+                        day30 = company_data[company_data['days_supply'] == 30]
+                        if not day30.empty:
+                            drug_row['companies'][company] = {
+                                'avg_unit_cost': float(day30.iloc[0]['avg_unit_cost']),
+                                'min_unit_cost': float(day30.iloc[0]['min_unit_cost']),
+                                'max_unit_cost': float(day30.iloc[0]['max_unit_cost']),
+                                'plan_count': int(day30.iloc[0]['plan_count'])
+                            }
+                        else:
+                            drug_row['companies'][company] = {
+                                'avg_unit_cost': 0.0,
+                                'min_unit_cost': 0.0,
+                                'max_unit_cost': 0.0,
+                                'plan_count': 0
+                            }
+                    else:
+                        drug_row['companies'][company] = {
+                            'avg_unit_cost': 0.0,
+                            'min_unit_cost': 0.0,
+                            'max_unit_cost': 0.0,
+                            'plan_count': 0
+                        }
+                
+                results.append(drug_row)
+            except Exception as e:
+                print(f"Error getting pricing for {drug_name}: {e}")
+                continue
+        
+        return results
+    except Exception as e:
+        import traceback
+        error_msg = f"Error in get_glp1_pricing: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        return []
+
+@app.get("/api/glp1/member-costs")
+async def get_glp1_member_costs(year: str = "2025"):
+    """Get member cost-sharing (copay/coinsurance) for GLP-1 drugs by company"""
+    
+    try:
+        conn = get_db(year)
+        
+        # Get parent organization mapping (same as pricing)
+        org_filter = " OR ".join([
+            f"UPPER(COALESCE(pe.parent_organization, p.contract_name)) LIKE '%{co.upper()}%'" 
+            for co in TARGET_COMPANIES
+        ])
+        
+        org_mapping_df = conn.execute(f"""
+            SELECT DISTINCT
+                COALESCE(pe.parent_organization, p.contract_name) as parent_org,
+                p.contract_id
+            FROM plans p
+            LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+            WHERE ({org_filter})
+        """).fetchdf()
+        
+        def normalize_org(org_name):
+            if not org_name:
+                return None
+            org_upper = org_name.upper()
+            for target in TARGET_COMPANIES:
+                if target.upper() in org_upper:
+                    return target
+            return None
+        
+        org_mapping_df['normalized_org'] = org_mapping_df['parent_org'].apply(normalize_org)
+        valid_contracts = org_mapping_df[org_mapping_df['normalized_org'].notna()]['contract_id'].unique().tolist()
+        
+        if not valid_contracts:
+            return []
+        
+        contract_list = ','.join([f"'{c}'" for c in valid_contracts])
+        
+        results = []
+        
+        for drug_name, rxcui in GLP1_DRUGS.items():
+            query = f"""
+            WITH company_plans AS (
+                SELECT DISTINCT
+                    p.contract_id,
+                    p.plan_key,
+                    p.formulary_id,
+                    COALESCE(pe.parent_organization, p.contract_name) as parent_org
+                FROM plans p
+                LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+                WHERE p.contract_id IN ({contract_list})
+            ),
+            normalized_plans AS (
+                SELECT 
+                    cp.*,
+                    CASE 
+                        WHEN UPPER(cp.parent_org) LIKE '%ELEVANCE%' THEN 'Elevance'
+                        WHEN UPPER(cp.parent_org) LIKE '%UNITEDHEALTH%' OR UPPER(cp.parent_org) LIKE '%UNITED HEALTH%' THEN 'UnitedHealth'
+                        WHEN UPPER(cp.parent_org) LIKE '%HUMANA%' THEN 'Humana'
+                        WHEN UPPER(cp.parent_org) LIKE '%CVS%' OR UPPER(cp.parent_org) LIKE '%AETNA%' THEN 'CVS'
+                        WHEN UPPER(cp.parent_org) LIKE '%MOLINA%' THEN 'Molina'
+                        WHEN UPPER(cp.parent_org) LIKE '%CENTENE%' THEN 'Centene'
+                        WHEN UPPER(cp.parent_org) LIKE '%ALIGNMENT%' THEN 'Alignment'
+                        ELSE NULL
+                    END as normalized_org
+                FROM company_plans cp
+                WHERE cp.parent_org IS NOT NULL
+            ),
+            drug_tiers AS (
+                SELECT DISTINCT
+                    np.normalized_org,
+                    np.plan_key,
+                    fd.tier_level_value as tier
+                FROM normalized_plans np
+                JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
+                WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
+                  AND np.normalized_org IS NOT NULL
+            ),
+            member_costs AS (
+                SELECT 
+                    dt.normalized_org,
+                    dt.plan_key,
+                    dt.tier,
+                    bc.cost_type_pref,
+                    bc.cost_amt_pref,
+                    bc.days_supply
+                FROM drug_tiers dt
+                JOIN beneficiary_costs bc ON dt.plan_key = bc.plan_key 
+                    AND bc.tier = dt.tier
+                    AND bc.days_supply = '30'
+            )
+            SELECT 
+                normalized_org as company,
+                cost_type_pref,
+                cost_amt_pref,
+                COUNT(DISTINCT plan_key) as plan_count
+            FROM member_costs
+            WHERE normalized_org IS NOT NULL
+            GROUP BY normalized_org, cost_type_pref, cost_amt_pref
+            ORDER BY normalized_org, cost_type_pref, CAST(cost_amt_pref AS DOUBLE)
+            """
+            
+            try:
+                result = conn.execute(query).fetchdf()
+                
+                if result.empty:
+                    # Create empty entry
+                    drug_row = {
+                        'drug_name': drug_name,
+                        'rxcui': rxcui,
+                        'companies': {}
+                    }
+                    for company in TARGET_COMPANIES:
+                        drug_row['companies'][company] = {
+                            'copay_plans': 0,
+                            'copay_pct': 0.0,
+                            'avg_copay': 0.0,
+                            'coinsurance_plans': 0,
+                            'coinsurance_pct': 0.0,
+                            'avg_coinsurance': 0.0,
+                            'no_charge_plans': 0,
+                            'no_charge_pct': 0.0
+                        }
+                    results.append(drug_row)
+                    continue
+                
+                # Get total plans per company for this drug
+                total_plans_query = f"""
+                    WITH company_plans AS (
+                        SELECT DISTINCT
+                            p.contract_id,
+                            p.plan_key,
+                            p.formulary_id,
+                            COALESCE(pe.parent_organization, p.contract_name) as parent_org
+                        FROM plans p
+                        LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+                        WHERE p.contract_id IN ({contract_list})
+                    ),
+                    normalized_plans AS (
+                        SELECT 
+                            cp.*,
+                            CASE 
+                                WHEN UPPER(cp.parent_org) LIKE '%ELEVANCE%' THEN 'Elevance'
+                                WHEN UPPER(cp.parent_org) LIKE '%UNITEDHEALTH%' OR UPPER(cp.parent_org) LIKE '%UNITED HEALTH%' THEN 'UnitedHealth'
+                                WHEN UPPER(cp.parent_org) LIKE '%HUMANA%' THEN 'Humana'
+                                WHEN UPPER(cp.parent_org) LIKE '%CVS%' OR UPPER(cp.parent_org) LIKE '%AETNA%' THEN 'CVS'
+                                WHEN UPPER(cp.parent_org) LIKE '%MOLINA%' THEN 'Molina'
+                                WHEN UPPER(cp.parent_org) LIKE '%CENTENE%' THEN 'Centene'
+                                WHEN UPPER(cp.parent_org) LIKE '%ALIGNMENT%' THEN 'Alignment'
+                                ELSE NULL
+                            END as normalized_org
+                        FROM company_plans cp
+                        WHERE cp.parent_org IS NOT NULL
+                    ),
+                    drug_plans AS (
+                        SELECT DISTINCT
+                            np.normalized_org,
+                            np.plan_key
+                        FROM normalized_plans np
+                        JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
+                        WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
+                          AND np.normalized_org IS NOT NULL
+                    )
+                    SELECT 
+                        normalized_org as company,
+                        COUNT(DISTINCT plan_key) as total_plans
+                    FROM drug_plans
+                    GROUP BY normalized_org
+                """
+                
+                total_plans_df = conn.execute(total_plans_query).fetchdf()
+                total_plans_dict = dict(zip(total_plans_df['company'], total_plans_df['total_plans']))
+                
+                # Process results
+                drug_row = {
+                    'drug_name': drug_name,
+                    'rxcui': rxcui,
+                    'companies': {}
+                }
+                
+                for company in TARGET_COMPANIES:
+                    company_data = result[result['company'] == company]
+                    total = total_plans_dict.get(company, 0)
+                    
+                    if company_data.empty or total == 0:
+                        drug_row['companies'][company] = {
+                            'copay_plans': 0,
+                            'copay_pct': 0.0,
+                            'avg_copay': 0.0,
+                            'coinsurance_plans': 0,
+                            'coinsurance_pct': 0.0,
+                            'avg_coinsurance': 0.0,
+                            'no_charge_plans': 0,
+                            'no_charge_pct': 0.0
+                        }
+                    else:
+                        # Separate by cost type
+                        copay_data = company_data[company_data['cost_type_pref'] == '0']
+                        coinsurance_data = company_data[company_data['cost_type_pref'] == '1']
+                        no_charge_data = company_data[company_data['cost_type_pref'] == '2']
+                        
+                        copay_count = copay_data['plan_count'].sum() if not copay_data.empty else 0
+                        coinsurance_count = coinsurance_data['plan_count'].sum() if not coinsurance_data.empty else 0
+                        no_charge_count = no_charge_data['plan_count'].sum() if not no_charge_data.empty else 0
+                        
+                        avg_copay = 0.0
+                        if not copay_data.empty:
+                            copay_amounts = copay_data['cost_amt_pref'].astype(float)
+                            avg_copay = float(copay_amounts.mean())
+                        
+                        avg_coinsurance = 0.0
+                        if not coinsurance_data.empty:
+                            coinsurance_amounts = coinsurance_data['cost_amt_pref'].astype(float)
+                            avg_coinsurance = float(coinsurance_amounts.mean())
+                        
+                        drug_row['companies'][company] = {
+                            'copay_plans': int(copay_count),
+                            'copay_pct': round(copay_count * 100.0 / total, 1) if total > 0 else 0.0,
+                            'avg_copay': round(avg_copay, 2),
+                            'coinsurance_plans': int(coinsurance_count),
+                            'coinsurance_pct': round(coinsurance_count * 100.0 / total, 1) if total > 0 else 0.0,
+                            'avg_coinsurance': round(avg_coinsurance, 1),
+                            'no_charge_plans': int(no_charge_count),
+                            'no_charge_pct': round(no_charge_count * 100.0 / total, 1) if total > 0 else 0.0
+                        }
+                
+                results.append(drug_row)
+            except Exception as e:
+                print(f"Error getting member costs for {drug_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        return results
+    except Exception as e:
+        import traceback
+        error_msg = f"Error in get_glp1_member_costs: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        return []
+
 @app.get("/api/glp1/companies")
 async def get_glp1_companies(year: str = "2025"):
     """Get list of target companies with their totals"""
