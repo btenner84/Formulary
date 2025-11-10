@@ -51,22 +51,6 @@
             </div>
         </div>
 
-        <!-- 2026 Data Container -->
-        <div id="masterTableContainer2026" style="display: none;">
-            <div class="table-container" style="margin-top: 3rem;">
-                <div class="table-header">
-                    <h2>2026 Master Comparison Table</h2>
-                    <p>Coverage, Tier Distribution, and Restrictions by Drug and Company</p>
-                </div>
-                <div class="table-wrapper">
-                    <table id="masterTable2026" class="master-table">
-                        <thead id="tableHead2026"></thead>
-                        <tbody id="tableBody2026"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
         <!-- 2025 Pricing Tables -->
         <div id="pricingTables2025" style="display: none;">
             <!-- Negotiated Rates Table -->
@@ -98,54 +82,19 @@
             </div>
         </div>
 
-        <!-- 2026 Pricing Tables -->
-        <div id="pricingTables2026" style="display: none;">
-            <!-- Negotiated Rates Table -->
-            <div class="table-container" style="margin-top: 3rem;">
-                <div class="table-header">
-                    <h2>2026 Negotiated Rates (Plan's Wholesale Cost)</h2>
-                    <p>Average unit cost per 30-day supply by drug and company</p>
-                </div>
-                <div class="table-wrapper">
-                    <table id="pricingTable2026" class="master-table">
-                        <thead id="pricingHead2026"></thead>
-                        <tbody id="pricingBody2026"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Member Cost-Sharing Table -->
-            <div class="table-container" style="margin-top: 3rem;">
-                <div class="table-header">
-                    <h2>2026 Member Cost-Sharing</h2>
-                    <p>Copay ($) and Coinsurance (%) by drug and company</p>
-                </div>
-                <div class="table-wrapper">
-                    <table id="memberCostTable2026" class="master-table">
-                        <thead id="memberCostHead2026"></thead>
-                        <tbody id="memberCostBody2026"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
     </div>
 
     <script>
         let glp1Data2025 = [];
-        let glp1Data2026 = [];
         let pricingData2025 = [];
-        let pricingData2026 = [];
         let memberCostData2025 = [];
-        let memberCostData2026 = [];
 
-        // Load GLP-1 data for both years
+        // Load GLP-1 data for 2025 only
         async function loadGLP1Data() {
             // Show loading
             document.getElementById('loadingState').style.display = 'block';
             document.getElementById('masterTableContainer2025').style.display = 'none';
-            document.getElementById('masterTableContainer2026').style.display = 'none';
             document.getElementById('pricingTables2025').style.display = 'none';
-            document.getElementById('pricingTables2026').style.display = 'none';
 
             try {
                 // Load 2025 data
@@ -159,36 +108,20 @@
                 pricingData2025 = Array.isArray(pricing2025) ? pricing2025 : [];
                 memberCostData2025 = Array.isArray(costs2025) ? costs2025 : [];
 
-                if (glp1Data2025.length > 0) {
-                    renderMasterTable('2025', glp1Data2025);
-                    document.getElementById('masterTableContainer2025').style.display = 'block';
-                }
-                if (pricingData2025.length > 0 || memberCostData2025.length > 0) {
-                    renderPricingTable('2025', pricingData2025);
-                    renderMemberCostTable('2025', memberCostData2025);
-                    document.getElementById('pricingTables2025').style.display = 'block';
-                }
+                console.log('2025 Data loaded:', {
+                    master: glp1Data2025.length,
+                    pricing: pricingData2025.length,
+                    costs: memberCostData2025.length,
+                    costsSample: memberCostData2025.length > 0 ? memberCostData2025[0] : null
+                });
 
-                // Load 2026 data
-                const [master2026, pricing2026, costs2026] = await Promise.all([
-                    fetch('/api/glp1/master-table?year=2026').then(r => r.ok ? r.json() : []),
-                    fetch('/api/glp1/pricing?year=2026').then(r => r.ok ? r.json() : []),
-                    fetch('/api/glp1/member-costs?year=2026').then(r => r.ok ? r.json() : [])
-                ]);
-
-                glp1Data2026 = Array.isArray(master2026) ? master2026 : [];
-                pricingData2026 = Array.isArray(pricing2026) ? pricing2026 : [];
-                memberCostData2026 = Array.isArray(costs2026) ? costs2026 : [];
-
-                if (glp1Data2026.length > 0) {
-                    renderMasterTable('2026', glp1Data2026);
-                    document.getElementById('masterTableContainer2026').style.display = 'block';
-                }
-                if (pricingData2026.length > 0 || memberCostData2026.length > 0) {
-                    renderPricingTable('2026', pricingData2026);
-                    renderMemberCostTable('2026', memberCostData2026);
-                    document.getElementById('pricingTables2026').style.display = 'block';
-                }
+                // Always show 2025 tables
+                renderMasterTable('2025', glp1Data2025);
+                document.getElementById('masterTableContainer2025').style.display = 'block';
+                
+                renderPricingTable('2025', pricingData2025);
+                renderMemberCostTable('2025', memberCostData2025);
+                document.getElementById('pricingTables2025').style.display = 'block';
 
                 // Hide loading
                 document.getElementById('loadingState').style.display = 'none';

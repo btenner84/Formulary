@@ -1204,11 +1204,12 @@ async def get_glp1_member_costs(year: str = "2025"):
                 SELECT DISTINCT
                     np.normalized_org,
                     np.plan_key,
-                    fd.tier_level_value as tier
+                    CAST(fd.tier_level_value AS INTEGER) as tier
                 FROM normalized_plans np
                 JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
                 WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
                   AND np.normalized_org IS NOT NULL
+                  AND fd.tier_level_value IS NOT NULL
             ),
             member_costs AS (
                 SELECT 
@@ -1220,8 +1221,9 @@ async def get_glp1_member_costs(year: str = "2025"):
                     bc.days_supply
                 FROM drug_tiers dt
                 JOIN beneficiary_costs bc ON dt.plan_key = bc.plan_key 
-                    AND bc.tier = dt.tier
-                    AND bc.days_supply = '30'
+                    AND CAST(bc.tier AS INTEGER) = dt.tier
+                    AND bc.coverage_level = 1
+                    AND bc.days_supply = 30
             )
             SELECT 
                 normalized_org as company,
@@ -1328,10 +1330,10 @@ async def get_glp1_member_costs(year: str = "2025"):
                             'no_charge_pct': 0.0
                         }
                     else:
-                        # Separate by cost type
-                        copay_data = company_data[company_data['cost_type_pref'] == '0']
-                        coinsurance_data = company_data[company_data['cost_type_pref'] == '1']
-                        no_charge_data = company_data[company_data['cost_type_pref'] == '2']
+                        # Separate by cost type (cost_type_pref: 0=copay, 1=coinsurance, 2=no charge)
+                        copay_data = company_data[company_data['cost_type_pref'].astype(str) == '0']
+                        coinsurance_data = company_data[company_data['cost_type_pref'].astype(str) == '1']
+                        no_charge_data = company_data[company_data['cost_type_pref'].astype(str) == '2']
                         
                         copay_count = copay_data['plan_count'].sum() if not copay_data.empty else 0
                         coinsurance_count = coinsurance_data['plan_count'].sum() if not coinsurance_data.empty else 0
