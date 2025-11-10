@@ -626,15 +626,33 @@ async def get_global_stats(year: str = "2025"):
 # GLP-1 ANALYSIS ENDPOINTS
 # ============================================================================
 
-# GLP-1 Drug RXCUI mappings
-# GLP-1 drugs with RXCUI codes verified from 2025 Q2 SPUF data using NDC patterns
+# GLP-1 Drug mappings - ALL RXCUIs for each drug (each RXCUI = different dosage/strength)
+# From drug_names.json - each dosage has its own RXCUI
 GLP1_DRUGS = {
-    'Ozempic': '2398842',      # Semaglutide injection - Found via NDC 00169-413x (370 formularies)
-    'Wegovy': '2553603',       # Semaglutide injection weight loss - Found via NDC 00169-450x (26 formularies)
-    'Rybelsus': '2619154',     # Semaglutide oral tablet - Found via NDC 00169-418x (370 formularies)
-    'Mounjaro': '2601776',     # Tirzepatide injection - Found via NDC 00002-146x (373 formularies)
-    'Trulicity': '1551306',    # Dulaglutide injection - Found via NDC 00002-143x (376 formularies)
-    'Victoza': '897126'        # Liraglutide injection - Found via NDC 00169-406x (26 formularies)
+    'Ozempic': {
+        'rxcuis': ['2398842', '2599365', '2619154'],  # Different dosages/strengths
+        'display_name': 'Ozempic'
+    },
+    'Wegovy': {
+        'rxcuis': ['2553506', '2553603', '2553803', '2553903', '2554104'],  # Different dosages
+        'display_name': 'Wegovy'
+    },
+    'Rybelsus': {
+        'rxcuis': ['2200650', '2200654', '2200658'],  # 14mg, 3mg, 7mg tablets
+        'display_name': 'Rybelsus'
+    },
+    'Mounjaro': {
+        'rxcuis': ['2601746', '2601758', '2601764', '2601770', '2601776', '2601785'],  # 5mg, 10mg, 15mg, 20mg, 25mg, 30mg
+        'display_name': 'Mounjaro'
+    },
+    'Trulicity': {
+        'rxcuis': ['1551300', '1551306', '2395779', '2395785'],  # Different dosages
+        'display_name': 'Trulicity'
+    },
+    'Victoza': {
+        'rxcuis': ['897126'],  # Single dosage
+        'display_name': 'Victoza'
+    }
 }
 
 # Target companies (case-insensitive matching)
@@ -695,20 +713,27 @@ async def get_glp1_master_table(year: str = "2025"):
         
         results = []
         
-        for drug_name, rxcui in GLP1_DRUGS.items():
-            # Get all NDCs for this drug (each NDC = different dosage/strength)
+        for drug_name, drug_info in GLP1_DRUGS.items():
+            rxcuis = drug_info['rxcuis']
+            display_name = drug_info['display_name']
+            
+            # Build RXCUI filter for all dosages of this drug
+            rxcui_list = ','.join([f"'{rxcui}'" for rxcui in rxcuis])
+            
+            # Get all NDCs for ALL RXCUIs of this drug (each NDC = different dosage/strength)
             ndcs_query = f"""
-                SELECT DISTINCT ndc
+                SELECT DISTINCT ndc, rxcui
                 FROM formulary_drugs
-                WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
+                WHERE CAST(rxcui AS VARCHAR) IN ({rxcui_list})
                   AND ndc IS NOT NULL
-                ORDER BY ndc
+                  AND ndc != ''
+                ORDER BY ndc, rxcui
             """
             ndcs_df = conn.execute(ndcs_query).fetchdf()
             
-            print(f"🔍 {drug_name} (RXCUI {rxcui}): Found {len(ndcs_df)} NDCs")
+            print(f"🔍 {display_name} ({len(rxcuis)} RXCUIs): Found {len(ndcs_df)} NDCs")
             if not ndcs_df.empty:
-                print(f"   NDCs: {', '.join(ndcs_df['ndc'].tolist()[:10])}")  # Show first 10
+                print(f"   NDCs: {', '.join(ndcs_df['ndc'].tolist()[:15])}")  # Show first 15
             
             if ndcs_df.empty:
                 continue
@@ -716,6 +741,7 @@ async def get_glp1_master_table(year: str = "2025"):
             # Process each NDC separately
             for _, ndc_row in ndcs_df.iterrows():
                 ndc = ndc_row['ndc']
+                rxcui = ndc_row['rxcui']
                 
                 # Get stats grouped by normalized parent organization for this specific NDC
                 query = f"""
@@ -847,13 +873,13 @@ async def get_glp1_master_table(year: str = "2025"):
                     result = pd.DataFrame(empty_data)
                 
                 # Add drug name and NDC to each row
-                result['drug_name'] = drug_name
+                result['drug_name'] = display_name
                 result['ndc'] = ndc
                 result['rxcui'] = rxcui
                 
                 results.append(result)
             except Exception as query_error:
-                print(f"❌ Query error for {drug_name} (RXCUI {rxcui}): {query_error}")
+                print(f"❌ Query error for {display_name} NDC {ndc} (RXCUI {rxcui}): {query_error}")
                 import traceback
                 traceback.print_exc()
                 # Continue with next drug instead of failing completely
@@ -1041,14 +1067,21 @@ async def get_glp1_pricing(year: str = "2025"):
         
         results = []
         
-        for drug_name, rxcui in GLP1_DRUGS.items():
-            # Get all NDCs for this drug (each NDC = different dosage/strength)
+        for drug_name, drug_info in GLP1_DRUGS.items():
+            rxcuis = drug_info['rxcuis']
+            display_name = drug_info['display_name']
+            
+            # Build RXCUI filter for all dosages of this drug
+            rxcui_list = ','.join([f"'{rxcui}'" for rxcui in rxcuis])
+            
+            # Get all NDCs for ALL RXCUIs of this drug
             ndcs_query = f"""
-                SELECT DISTINCT ndc
+                SELECT DISTINCT ndc, rxcui
                 FROM formulary_drugs
-                WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
+                WHERE CAST(rxcui AS VARCHAR) IN ({rxcui_list})
                   AND ndc IS NOT NULL
-                ORDER BY ndc
+                  AND ndc != ''
+                ORDER BY ndc, rxcui
             """
             ndcs_df = conn.execute(ndcs_query).fetchdf()
             
@@ -1058,6 +1091,7 @@ async def get_glp1_pricing(year: str = "2025"):
             # Process each NDC separately
             for _, ndc_row in ndcs_df.iterrows():
                 ndc = ndc_row['ndc']
+                rxcui = ndc_row['rxcui']
                 
                 # Get pricing by normalized company for this specific NDC
                 query = f"""
@@ -1114,7 +1148,7 @@ async def get_glp1_pricing(year: str = "2025"):
                 
                 # Pivot by company (create row even if empty)
                 drug_row = {
-                    'drug_name': drug_name,
+                    'drug_name': display_name,
                     'ndc': ndc,
                     'rxcui': rxcui,
                     'companies': {}
@@ -1212,14 +1246,21 @@ async def get_glp1_member_costs(year: str = "2025"):
         
         results = []
         
-        for drug_name, rxcui in GLP1_DRUGS.items():
-            # Get all NDCs for this drug (each NDC = different dosage/strength)
+        for drug_name, drug_info in GLP1_DRUGS.items():
+            rxcuis = drug_info['rxcuis']
+            display_name = drug_info['display_name']
+            
+            # Build RXCUI filter for all dosages of this drug
+            rxcui_list = ','.join([f"'{rxcui}'" for rxcui in rxcuis])
+            
+            # Get all NDCs for ALL RXCUIs of this drug
             ndcs_query = f"""
-                SELECT DISTINCT ndc
+                SELECT DISTINCT ndc, rxcui
                 FROM formulary_drugs
-                WHERE CAST(rxcui AS VARCHAR) = '{rxcui}'
+                WHERE CAST(rxcui AS VARCHAR) IN ({rxcui_list})
                   AND ndc IS NOT NULL
-                ORDER BY ndc
+                  AND ndc != ''
+                ORDER BY ndc, rxcui
             """
             ndcs_df = conn.execute(ndcs_query).fetchdf()
             
@@ -1229,6 +1270,7 @@ async def get_glp1_member_costs(year: str = "2025"):
             # Process each NDC separately
             for _, ndc_row in ndcs_df.iterrows():
                 ndc = ndc_row['ndc']
+                rxcui = ndc_row['rxcui']
                 
                 query = f"""
             WITH company_plans AS (
@@ -1300,7 +1342,7 @@ async def get_glp1_member_costs(year: str = "2025"):
                 if result.empty:
                     # Create empty entry
                     drug_row = {
-                        'drug_name': drug_name,
+                        'drug_name': display_name,
                         'ndc': ndc,
                         'rxcui': rxcui,
                         'companies': {}
@@ -1368,7 +1410,7 @@ async def get_glp1_member_costs(year: str = "2025"):
                 
                 # Process results
                 drug_row = {
-                    'drug_name': drug_name,
+                    'drug_name': display_name,
                     'ndc': ndc,
                     'rxcui': rxcui,
                     'companies': {}
