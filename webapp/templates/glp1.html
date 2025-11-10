@@ -132,14 +132,21 @@
             }
             
             // Calculate totals
-            const totalCompanies = new Set(glp1Data.map(d => d.contract_name)).size;
-            const totalDrugs = new Set(glp1Data.map(d => d.drug_name)).size;
+            const totalCompanies = 7; // Fixed: Elevance, UnitedHealth, Humana, CVS, Molina, Centene, Alignment
+            const totalDrugs = glp1Data.length;
             
-            // Calculate average coverage
-            const avgCoverage = glp1Data
-                .filter(d => d.plans_with_drug > 0)
-                .reduce((sum, d) => sum + (d.plan_pct || 0), 0) / 
-                glp1Data.filter(d => d.plans_with_drug > 0).length || 0;
+            // Calculate average coverage across all drugs and companies
+            let totalCoverage = 0;
+            let coverageCount = 0;
+            glp1Data.forEach(drug => {
+                Object.values(drug.companies || {}).forEach(companyData => {
+                    if (companyData.plans_with_drug > 0) {
+                        totalCoverage += (companyData.plan_pct || 0);
+                        coverageCount++;
+                    }
+                });
+            });
+            const avgCoverage = coverageCount > 0 ? totalCoverage / coverageCount : 0;
 
             statsContainer.innerHTML = `
                 <div class="stat-card">
@@ -161,138 +168,105 @@
             `;
         }
 
-        // Render master table
+        // Render master table - Companies as columns, Drugs as rows
         function renderMasterTable() {
             const tableHead = document.getElementById('tableHead');
             const tableBody = document.getElementById('tableBody');
 
             // Safety check
             if (!Array.isArray(glp1Data) || glp1Data.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="20" style="text-align: center; padding: 2rem;">No data available</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="64" style="text-align: center; padding: 2rem;">No data available</td></tr>';
                 return;
             }
 
-            // Get unique companies and drugs
-            const companies = [...new Set(glp1Data.map(d => d.contract_name))].sort();
-            const drugs = ['Ozempic', 'Wegovy', 'Rybelsus', 'Mounjaro', 'Trulicity', 'Victoza'];
-
-            // Build header
-            tableHead.innerHTML = `
+            // Companies are now column headers (the 7 target companies)
+            const companies = ['Elevance', 'UnitedHealth', 'Humana', 'CVS', 'Molina', 'Centene', 'Alignment'];
+            
+            // Build header - Companies as columns
+            let headerHTML = `
                 <tr>
                     <th rowspan="2" class="sticky-col">Drug</th>
-                    <th rowspan="2" class="sticky-col">Company</th>
-                    <th colspan="2" class="section-header">Coverage</th>
-                    <th colspan="8" class="section-header">Tier Distribution</th>
-                    <th colspan="6" class="section-header">Restrictions</th>
-                </tr>
-                <tr>
-                    <!-- Coverage columns -->
+            `;
+            
+            // Add company columns (each company gets multiple sub-columns)
+            companies.forEach(company => {
+                headerHTML += `
+                    <th colspan="9" class="company-header">${company}</th>
+                `;
+            });
+            
+            headerHTML += `</tr><tr>`;
+            
+            // Add sub-headers for each company
+            companies.forEach(() => {
+                headerHTML += `
                     <th>Formularies<br><small># / %</small></th>
                     <th>Plans<br><small># / %</small></th>
-                    <!-- Tier columns -->
                     <th>Tier 3<br><small># / %</small></th>
                     <th>Tier 4<br><small># / %</small></th>
                     <th>Tier 5<br><small># / %</small></th>
                     <th>Tier 6<br><small># / %</small></th>
-                    <!-- Restrictions columns -->
-                    <th>Prior Auth<br><small># / %</small></th>
-                    <th>Step Therapy<br><small># / %</small></th>
-                    <th>Qty Limit<br><small># / %</small></th>
-                </tr>
-            `;
+                    <th>PA<br><small># / %</small></th>
+                    <th>ST<br><small># / %</small></th>
+                    <th>QL<br><small># / %</small></th>
+                `;
+            });
+            
+            headerHTML += `</tr>`;
+            tableHead.innerHTML = headerHTML;
 
-            // Build body - one row per drug per company
+            // Build body - one row per drug
             tableBody.innerHTML = '';
             
-            drugs.forEach(drug => {
-                const drugRows = glp1Data.filter(d => d.drug_name === drug);
+            glp1Data.forEach(drug => {
+                const tr = document.createElement('tr');
+                let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
                 
-                drugRows.forEach((row, idx) => {
-                    const tr = document.createElement('tr');
-                    if (idx === 0) {
-                        tr.innerHTML = `
-                            <td rowspan="${drugRows.length}" class="drug-name sticky-col">${drug}</td>
-                            <td class="company-name sticky-col">${row.contract_name || 'N/A'}</td>
-                            <td class="coverage-cell">
-                                <strong>${row.formularies_with_drug || 0}</strong><br>
-                                <small>${(row.formulary_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="coverage-cell">
-                                <strong>${row.plans_with_drug || 0}</strong><br>
-                                <small>${(row.plan_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier3">
-                                <strong>${row.tier3_count || 0}</strong><br>
-                                <small>${(row.tier3_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier4">
-                                <strong>${row.tier4_count || 0}</strong><br>
-                                <small>${(row.tier4_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier5">
-                                <strong>${row.tier5_count || 0}</strong><br>
-                                <small>${(row.tier5_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier6">
-                                <strong>${row.tier6_count || 0}</strong><br>
-                                <small>${(row.tier6_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="restriction-cell">
-                                <strong>${row.pa_count || 0}</strong><br>
-                                <small>${(row.pa_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="restriction-cell">
-                                <strong>${row.st_count || 0}</strong><br>
-                                <small>${(row.st_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="restriction-cell">
-                                <strong>${row.ql_count || 0}</strong><br>
-                                <small>${(row.ql_pct || 0).toFixed(1)}%</small>
-                            </td>
-                        `;
-                    } else {
-                        tr.innerHTML = `
-                            <td class="company-name sticky-col">${row.contract_name || 'N/A'}</td>
-                            <td class="coverage-cell">
-                                <strong>${row.formularies_with_drug || 0}</strong><br>
-                                <small>${(row.formulary_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="coverage-cell">
-                                <strong>${row.plans_with_drug || 0}</strong><br>
-                                <small>${(row.plan_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier3">
-                                <strong>${row.tier3_count || 0}</strong><br>
-                                <small>${(row.tier3_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier4">
-                                <strong>${row.tier4_count || 0}</strong><br>
-                                <small>${(row.tier4_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier5">
-                                <strong>${row.tier5_count || 0}</strong><br>
-                                <small>${(row.tier5_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="tier-cell tier6">
-                                <strong>${row.tier6_count || 0}</strong><br>
-                                <small>${(row.tier6_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="restriction-cell">
-                                <strong>${row.pa_count || 0}</strong><br>
-                                <small>${(row.pa_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="restriction-cell">
-                                <strong>${row.st_count || 0}</strong><br>
-                                <small>${(row.st_pct || 0).toFixed(1)}%</small>
-                            </td>
-                            <td class="restriction-cell">
-                                <strong>${row.ql_count || 0}</strong><br>
-                                <small>${(row.ql_pct || 0).toFixed(1)}%</small>
-                            </td>
-                        `;
-                    }
-                    tableBody.appendChild(tr);
+                // Add data for each company
+                companies.forEach(company => {
+                    const companyData = drug.companies[company] || {};
+                    rowHTML += `
+                        <td class="coverage-cell">
+                            <strong>${companyData.formularies_with_drug || 0}</strong><br>
+                            <small>${(companyData.formulary_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="coverage-cell">
+                            <strong>${companyData.plans_with_drug || 0}</strong><br>
+                            <small>${(companyData.plan_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="tier-cell tier3">
+                            <strong>${companyData.tier3_count || 0}</strong><br>
+                            <small>${(companyData.tier3_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="tier-cell tier4">
+                            <strong>${companyData.tier4_count || 0}</strong><br>
+                            <small>${(companyData.tier4_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="tier-cell tier5">
+                            <strong>${companyData.tier5_count || 0}</strong><br>
+                            <small>${(companyData.tier5_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="tier-cell tier6">
+                            <strong>${companyData.tier6_count || 0}</strong><br>
+                            <small>${(companyData.tier6_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="restriction-cell">
+                            <strong>${companyData.pa_count || 0}</strong><br>
+                            <small>${(companyData.pa_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="restriction-cell">
+                            <strong>${companyData.st_count || 0}</strong><br>
+                            <small>${(companyData.st_pct || 0).toFixed(1)}%</small>
+                        </td>
+                        <td class="restriction-cell">
+                            <strong>${companyData.ql_count || 0}</strong><br>
+                            <small>${(companyData.ql_pct || 0).toFixed(1)}%</small>
+                        </td>
+                    `;
                 });
+                
+                tr.innerHTML = rowHTML;
+                tableBody.appendChild(tr);
             });
         }
 

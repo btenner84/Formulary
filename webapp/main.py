@@ -650,78 +650,106 @@ TARGET_COMPANIES = [
 
 @app.get("/api/glp1/master-table")
 async def get_glp1_master_table(year: str = "2025"):
-    """Get comprehensive GLP-1 coverage analysis for target companies"""
+    """Get comprehensive GLP-1 coverage analysis for target companies - pivoted with companies as columns"""
     
     try:
         conn = get_db(year)
         
-        # First, verify we can find the drugs at all
-        test_rxcui = list(GLP1_DRUGS.values())[0]
-        test_count = conn.execute(f"""
-            SELECT COUNT(*) as cnt 
-            FROM formulary_drugs 
-            WHERE CAST(rxcui AS VARCHAR) = '{test_rxcui}'
-        """).fetchone()[0]
-        print(f"🔍 Debug: Found {test_count:,} records for test RXCUI {test_rxcui}")
-        
-        # Build company filter (case-insensitive) - without alias for direct queries
-        company_filter_no_alias = " OR ".join([
-            f"UPPER(contract_name) LIKE '%{co.upper()}%'" 
+        # Build parent organization filter (case-insensitive)
+        org_filter = " OR ".join([
+            f"UPPER(COALESCE(pe.parent_organization, p.contract_name)) LIKE '%{co.upper()}%'" 
             for co in TARGET_COMPANIES
         ])
         
-        # Build company filter with alias for JOIN queries
-        company_filter_with_alias = " OR ".join([
-            f"UPPER(p.contract_name) LIKE '%{co.upper()}%'" 
-            for co in TARGET_COMPANIES
-        ])
+        # Get parent organization mapping and normalize to 7 target companies
+        org_mapping_df = conn.execute(f"""
+            SELECT DISTINCT
+                COALESCE(pe.parent_organization, p.contract_name) as parent_org,
+                p.contract_id,
+                p.contract_name
+            FROM plans p
+            LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+            WHERE ({org_filter})
+        """).fetchdf()
         
-        # Verify company matching
-        company_count = conn.execute(f"""
-            SELECT COUNT(DISTINCT contract_name) as cnt
-            FROM plans
-            WHERE ({company_filter_no_alias})
-        """).fetchone()[0]
-        print(f"🔍 Debug: Found {company_count} matching companies")
+        # Map each contract to one of the 7 target companies
+        def normalize_org(org_name):
+            if not org_name:
+                return None
+            org_upper = org_name.upper()
+            for target in TARGET_COMPANIES:
+                if target.upper() in org_upper:
+                    return target
+            return None
+        
+        org_mapping_df['normalized_org'] = org_mapping_df['parent_org'].apply(normalize_org)
+        org_mapping = dict(zip(org_mapping_df['contract_id'], org_mapping_df['normalized_org']))
+        
+        # Build contract_id filter for normalized companies
+        valid_contracts = org_mapping_df[org_mapping_df['normalized_org'].notna()]['contract_id'].unique().tolist()
+        if valid_contracts:
+            contract_list = ','.join([f"'{c}'" for c in valid_contracts])
+            contract_filter = f"p.contract_id IN ({contract_list})"
+        else:
+            contract_filter = "1=0"
         
         results = []
         
         for drug_name, rxcui in GLP1_DRUGS.items():
-            # Get total formularies and plans per company
+            # Get stats grouped by normalized parent organization
             query = f"""
             WITH company_plans AS (
                 SELECT DISTINCT
-                    p.contract_name,
+                    p.contract_id,
                     p.formulary_id,
                     p.plan_id,
-                    p.contract_id
+                    COALESCE(pe.parent_organization, p.contract_name) as parent_org
                 FROM plans p
-                WHERE ({company_filter_with_alias})
+                LEFT JOIN plan_enrollment pe ON p.contract_id = pe.contract_number AND p.plan_id = pe.plan_id
+                WHERE {contract_filter}
+            ),
+            normalized_plans AS (
+                SELECT 
+                    cp.*,
+                    CASE 
+                        WHEN UPPER(cp.parent_org) LIKE '%ELEVANCE%' THEN 'Elevance'
+                        WHEN UPPER(cp.parent_org) LIKE '%UNITEDHEALTH%' OR UPPER(cp.parent_org) LIKE '%UNITED HEALTH%' THEN 'UnitedHealth'
+                        WHEN UPPER(cp.parent_org) LIKE '%HUMANA%' THEN 'Humana'
+                        WHEN UPPER(cp.parent_org) LIKE '%CVS%' OR UPPER(cp.parent_org) LIKE '%AETNA%' THEN 'CVS'
+                        WHEN UPPER(cp.parent_org) LIKE '%MOLINA%' THEN 'Molina'
+                        WHEN UPPER(cp.parent_org) LIKE '%CENTENE%' THEN 'Centene'
+                        WHEN UPPER(cp.parent_org) LIKE '%ALIGNMENT%' THEN 'Alignment'
+                        ELSE NULL
+                    END as normalized_org
+                FROM company_plans cp
+                WHERE cp.parent_org IS NOT NULL
+            ),
+            company_totals AS (
+                SELECT 
+                    normalized_org,
+                    COUNT(DISTINCT formulary_id) as total_formularies,
+                    COUNT(DISTINCT plan_id) as total_plans
+                FROM normalized_plans
+                WHERE normalized_org IS NOT NULL
+                GROUP BY normalized_org
             ),
             drug_coverage AS (
                 SELECT DISTINCT
-                    cp.contract_name,
-                    cp.formulary_id,
-                    cp.plan_id,
+                    np.normalized_org,
+                    np.formulary_id,
+                    np.plan_id,
                     CAST(fd.tier_level_value AS VARCHAR) as tier_level_value,
                     fd.prior_authorization_yn,
                     fd.step_therapy_yn,
                     fd.quantity_limit_yn
-                FROM company_plans cp
-                JOIN formulary_drugs fd ON cp.formulary_id = fd.formulary_id
+                FROM normalized_plans np
+                JOIN formulary_drugs fd ON np.formulary_id = fd.formulary_id
                 WHERE CAST(fd.rxcui AS VARCHAR) = '{rxcui}'
-            ),
-            company_totals AS (
-                SELECT 
-                    contract_name,
-                    COUNT(DISTINCT formulary_id) as total_formularies,
-                    COUNT(DISTINCT plan_id) as total_plans
-                FROM company_plans
-                GROUP BY contract_name
+                  AND np.normalized_org IS NOT NULL
             ),
             drug_stats AS (
                 SELECT 
-                    dc.contract_name,
+                    dc.normalized_org,
                     COUNT(DISTINCT dc.formulary_id) as formularies_with_drug,
                     COUNT(DISTINCT dc.plan_id) as plans_with_drug,
                     COUNT(DISTINCT CASE WHEN CAST(dc.tier_level_value AS INTEGER) = 3 THEN dc.plan_id END) as plans_tier3,
@@ -732,10 +760,10 @@ async def get_glp1_master_table(year: str = "2025"):
                     COUNT(DISTINCT CASE WHEN UPPER(CAST(dc.step_therapy_yn AS VARCHAR)) = 'Y' THEN dc.plan_id END) as plans_with_st,
                     COUNT(DISTINCT CASE WHEN UPPER(CAST(dc.quantity_limit_yn AS VARCHAR)) = 'Y' THEN dc.plan_id END) as plans_with_ql
                 FROM drug_coverage dc
-                GROUP BY dc.contract_name
+                GROUP BY dc.normalized_org
             )
             SELECT 
-                ct.contract_name,
+                ct.normalized_org as company,
                 ct.total_formularies,
                 ct.total_plans,
                 COALESCE(ds.formularies_with_drug, 0) as formularies_with_drug,
@@ -757,51 +785,44 @@ async def get_glp1_master_table(year: str = "2025"):
                 ROUND(COALESCE(ds.plans_with_st, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as st_pct,
                 ROUND(COALESCE(ds.plans_with_ql, 0) * 100.0 / NULLIF(ds.plans_with_drug, 0), 1) as ql_pct
             FROM company_totals ct
-            LEFT JOIN drug_stats ds ON ct.contract_name = ds.contract_name
-            ORDER BY ct.contract_name
+            LEFT JOIN drug_stats ds ON ct.normalized_org = ds.normalized_org
+            WHERE ct.normalized_org IS NOT NULL
+            ORDER BY ct.normalized_org
             """
             
             try:
                 result = conn.execute(query).fetchdf()
                 
-                # Check if result is empty
+                # Check if result is empty - create empty rows for all 7 companies
                 if result.empty:
                     print(f"⚠️  No data found for {drug_name} (RXCUI {rxcui})")
-                    # Create empty result with company structure
-                    company_totals_query = f"""
-                        SELECT DISTINCT
-                            contract_name,
-                            COUNT(DISTINCT formulary_id) as total_formularies,
-                            COUNT(DISTINCT plan_id) as total_plans
-                        FROM plans
-                        WHERE ({company_filter_no_alias})
-                        GROUP BY contract_name
-                    """
-                    company_totals_df = conn.execute(company_totals_query).fetchdf()
-                    if not company_totals_df.empty:
-                        # Create empty rows for each company
-                        company_totals_df['formularies_with_drug'] = 0
-                        company_totals_df['plans_with_drug'] = 0
-                        company_totals_df['formulary_pct'] = 0.0
-                        company_totals_df['plan_pct'] = 0.0
-                        company_totals_df['tier3_count'] = 0
-                        company_totals_df['tier4_count'] = 0
-                        company_totals_df['tier5_count'] = 0
-                        company_totals_df['tier6_count'] = 0
-                        company_totals_df['tier3_pct'] = 0.0
-                        company_totals_df['tier4_pct'] = 0.0
-                        company_totals_df['tier5_pct'] = 0.0
-                        company_totals_df['tier6_pct'] = 0.0
-                        company_totals_df['pa_count'] = 0
-                        company_totals_df['st_count'] = 0
-                        company_totals_df['ql_count'] = 0
-                        company_totals_df['pa_pct'] = 0.0
-                        company_totals_df['st_pct'] = 0.0
-                        company_totals_df['ql_pct'] = 0.0
-                        result = company_totals_df
-                    else:
-                        # No companies found, skip this drug
-                        continue
+                    # Create empty result for all target companies
+                    empty_data = []
+                    for company in TARGET_COMPANIES:
+                        empty_data.append({
+                            'company': company,
+                            'total_formularies': 0,
+                            'total_plans': 0,
+                            'formularies_with_drug': 0,
+                            'plans_with_drug': 0,
+                            'formulary_pct': 0.0,
+                            'plan_pct': 0.0,
+                            'tier3_count': 0,
+                            'tier4_count': 0,
+                            'tier5_count': 0,
+                            'tier6_count': 0,
+                            'tier3_pct': 0.0,
+                            'tier4_pct': 0.0,
+                            'tier5_pct': 0.0,
+                            'tier6_pct': 0.0,
+                            'pa_count': 0,
+                            'st_count': 0,
+                            'ql_count': 0,
+                            'pa_pct': 0.0,
+                            'st_pct': 0.0,
+                            'ql_pct': 0.0
+                        })
+                    result = pd.DataFrame(empty_data)
                 
                 # Add drug name to each row
                 result['drug_name'] = drug_name
@@ -844,11 +865,105 @@ async def get_glp1_master_table(year: str = "2025"):
             'ql_pct': 0
         })
         
-        result_dict = combined.to_dict(orient='records')
-        # Ensure we always return a list, even if empty
-        if not result_dict:
-            return []
-        return result_dict
+        # Pivot: Transform to have one row per drug, with companies as nested objects
+        pivoted_data = []
+        for drug_name in GLP1_DRUGS.keys():
+            drug_data = combined[combined['drug_name'] == drug_name].copy()
+            
+            if drug_data.empty:
+                # Create empty entry for this drug
+                drug_row = {
+                    'drug_name': drug_name,
+                    'rxcui': GLP1_DRUGS[drug_name],
+                    'companies': {}
+                }
+                for company in TARGET_COMPANIES:
+                    drug_row['companies'][company] = {
+                        'total_formularies': 0,
+                        'total_plans': 0,
+                        'formularies_with_drug': 0,
+                        'plans_with_drug': 0,
+                        'formulary_pct': 0.0,
+                        'plan_pct': 0.0,
+                        'tier3_count': 0,
+                        'tier4_count': 0,
+                        'tier5_count': 0,
+                        'tier6_count': 0,
+                        'tier3_pct': 0.0,
+                        'tier4_pct': 0.0,
+                        'tier5_pct': 0.0,
+                        'tier6_pct': 0.0,
+                        'pa_count': 0,
+                        'st_count': 0,
+                        'ql_count': 0,
+                        'pa_pct': 0.0,
+                        'st_pct': 0.0,
+                        'ql_pct': 0.0
+                    }
+            else:
+                # Get first row for drug info
+                first_row = drug_data.iloc[0]
+                drug_row = {
+                    'drug_name': drug_name,
+                    'rxcui': first_row['rxcui'],
+                    'companies': {}
+                }
+                
+                # Add data for each company
+                for _, row in drug_data.iterrows():
+                    company = row['company']
+                    drug_row['companies'][company] = {
+                        'total_formularies': int(row['total_formularies']),
+                        'total_plans': int(row['total_plans']),
+                        'formularies_with_drug': int(row['formularies_with_drug']),
+                        'plans_with_drug': int(row['plans_with_drug']),
+                        'formulary_pct': float(row['formulary_pct']),
+                        'plan_pct': float(row['plan_pct']),
+                        'tier3_count': int(row['tier3_count']),
+                        'tier4_count': int(row['tier4_count']),
+                        'tier5_count': int(row['tier5_count']),
+                        'tier6_count': int(row['tier6_count']),
+                        'tier3_pct': float(row['tier3_pct']),
+                        'tier4_pct': float(row['tier4_pct']),
+                        'tier5_pct': float(row['tier5_pct']),
+                        'tier6_pct': float(row['tier6_pct']),
+                        'pa_count': int(row['pa_count']),
+                        'st_count': int(row['st_count']),
+                        'ql_count': int(row['ql_count']),
+                        'pa_pct': float(row['pa_pct']),
+                        'st_pct': float(row['st_pct']),
+                        'ql_pct': float(row['ql_pct'])
+                    }
+                
+                # Ensure all 7 companies are present (fill missing with zeros)
+                for company in TARGET_COMPANIES:
+                    if company not in drug_row['companies']:
+                        drug_row['companies'][company] = {
+                            'total_formularies': 0,
+                            'total_plans': 0,
+                            'formularies_with_drug': 0,
+                            'plans_with_drug': 0,
+                            'formulary_pct': 0.0,
+                            'plan_pct': 0.0,
+                            'tier3_count': 0,
+                            'tier4_count': 0,
+                            'tier5_count': 0,
+                            'tier6_count': 0,
+                            'tier3_pct': 0.0,
+                            'tier4_pct': 0.0,
+                            'tier5_pct': 0.0,
+                            'tier6_pct': 0.0,
+                            'pa_count': 0,
+                            'st_count': 0,
+                            'ql_count': 0,
+                            'pa_pct': 0.0,
+                            'st_pct': 0.0,
+                            'ql_pct': 0.0
+                        }
+            
+            pivoted_data.append(drug_row)
+        
+        return pivoted_data
     except Exception as e:
         import traceback
         error_msg = f"Error in get_glp1_master_table: {str(e)}\n{traceback.format_exc()}"
