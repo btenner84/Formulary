@@ -7,6 +7,8 @@ from typing import Optional
 import duckdb
 import pandas as pd
 import os
+import json
+import re
 
 app = FastAPI(title="Medicare Part D Intelligence Platform")
 
@@ -626,6 +628,57 @@ async def get_global_stats(year: str = "2025"):
 # GLP-1 ANALYSIS ENDPOINTS
 # ============================================================================
 
+# Load drug names to map RXCUI to dosage info
+def load_drug_names():
+    """Load drug names JSON and create RXCUI to dosage mapping"""
+    drug_names_path = static_dir / "drug_names.json"
+    if not drug_names_path.exists():
+        return {}
+    
+    with open(drug_names_path, 'r') as f:
+        drug_names = json.load(f)
+    
+    # Extract dosage from drug name string
+    # Example: "0.5 ML tirzepatide 5 MG/ML Auto-Injector [Mounjaro]" -> "5 MG/ML"
+    # Example: "semaglutide 3 MG Oral Tablet [Rybelsus]" -> "3 MG"
+    rxcui_to_dosage = {}
+    for rxcui, drug_desc in drug_names.items():
+        # Try to extract the main strength (look for patterns like "X MG/ML" or "X MG" after the drug name)
+        # Skip volume patterns like "0.5 ML" and look for the actual drug strength
+        # Pattern: look for number followed by MG/ML or MG, but prioritize larger numbers (strength, not volume)
+        matches = list(re.finditer(r'(\d+(?:\.\d+)?)\s*(MG/ML|MG)', drug_desc, re.IGNORECASE))
+        if matches:
+            # Use the last match (usually the strength, not the volume)
+            # Or use the largest number if multiple matches
+            best_match = None
+            max_num = 0
+            for match in matches:
+                num = float(match.group(1))
+                if num > max_num and num >= 1:  # Prefer strengths >= 1mg (not volumes like 0.5 ML)
+                    max_num = num
+                    best_match = match
+            
+            if best_match:
+                dosage = f"{best_match.group(1)} {best_match.group(2)}"
+                rxcui_to_dosage[rxcui] = dosage
+            else:
+                # Fallback to last match
+                last_match = matches[-1]
+                dosage = f"{last_match.group(1)} {last_match.group(2)}"
+                rxcui_to_dosage[rxcui] = dosage
+        else:
+            # Fallback: use first number found
+            match = re.search(r'(\d+(?:\.\d+)?)', drug_desc)
+            if match:
+                rxcui_to_dosage[rxcui] = f"{match.group(1)}mg"
+            else:
+                rxcui_to_dosage[rxcui] = "N/A"
+    
+    return rxcui_to_dosage
+
+# Load drug names mapping
+RXCUI_TO_DOSAGE = load_drug_names()
+
 # GLP-1 Drug mappings - ALL RXCUIs for each drug (each RXCUI = different dosage/strength)
 # From drug_names.json - each dosage has its own RXCUI
 GLP1_DRUGS = {
@@ -872,10 +925,13 @@ async def get_glp1_master_table(year: str = "2025"):
                         })
                     result = pd.DataFrame(empty_data)
                 
-                # Add drug name and NDC to each row
+                # Add drug name, NDC, RXCUI, and dosage to each row
                 result['drug_name'] = display_name
                 result['ndc'] = ndc
                 result['rxcui'] = rxcui
+                # Get dosage from RXCUI mapping
+                dosage = RXCUI_TO_DOSAGE.get(str(rxcui), f"NDC: {ndc}")
+                result['dosage'] = dosage
                 
                 results.append(result)
             except Exception as query_error:
@@ -916,8 +972,12 @@ async def get_glp1_master_table(year: str = "2025"):
         
         # Pivot: Transform to have one row per drug+NDC combination, with companies as nested objects
         pivoted_data = []
-        # Group by drug_name and ndc
-        for (drug_name, ndc), drug_data in combined.groupby(['drug_name', 'ndc']):
+        
+        print(f"📊 Total rows before pivoting: {len(combined)}")
+        print(f"📊 Unique drug+NDC combinations: {combined.groupby(['drug_name', 'ndc']).ngroups}")
+        
+        # Group by drug_name, ndc, and dosage to ensure each NDC gets its own row
+        for (drug_name, ndc, dosage), drug_data in combined.groupby(['drug_name', 'ndc', 'dosage']):
             drug_data = drug_data.copy()
             
             if drug_data.empty:
@@ -925,7 +985,8 @@ async def get_glp1_master_table(year: str = "2025"):
                 drug_row = {
                     'drug_name': drug_name,
                     'ndc': ndc,
-                    'rxcui': GLP1_DRUGS.get(drug_name, ''),
+                    'dosage': dosage,
+                    'rxcui': drug_data.iloc[0]['rxcui'] if not drug_data.empty else '',
                     'companies': {}
                 }
                 for company in TARGET_COMPANIES:
@@ -957,6 +1018,7 @@ async def get_glp1_master_table(year: str = "2025"):
                 drug_row = {
                     'drug_name': drug_name,
                     'ndc': ndc,
+                    'dosage': dosage,
                     'rxcui': first_row['rxcui'],
                     'companies': {}
                 }
@@ -1014,6 +1076,10 @@ async def get_glp1_master_table(year: str = "2025"):
                         }
             
             pivoted_data.append(drug_row)
+        
+        print(f"✅ Returning {len(pivoted_data)} rows (one per drug+NDC combination)")
+        for row in pivoted_data[:10]:  # Show first 10
+            print(f"   - {row['drug_name']} | {row['dosage']} | NDC: {row['ndc']}")
         
         return pivoted_data
     except Exception as e:
@@ -1147,9 +1213,11 @@ async def get_glp1_pricing(year: str = "2025"):
                 result = conn.execute(query).fetchdf()
                 
                 # Pivot by company (create row even if empty)
+                dosage = RXCUI_TO_DOSAGE.get(str(rxcui), f"NDC: {ndc}")
                 drug_row = {
                     'drug_name': display_name,
                     'ndc': ndc,
+                    'dosage': dosage,
                     'rxcui': rxcui,
                     'companies': {}
                 }
@@ -1341,9 +1409,11 @@ async def get_glp1_member_costs(year: str = "2025"):
                 
                 if result.empty:
                     # Create empty entry
+                    dosage = RXCUI_TO_DOSAGE.get(str(rxcui), f"NDC: {ndc}")
                     drug_row = {
                         'drug_name': display_name,
                         'ndc': ndc,
+                        'dosage': dosage,
                         'rxcui': rxcui,
                         'companies': {}
                     }
@@ -1409,9 +1479,11 @@ async def get_glp1_member_costs(year: str = "2025"):
                 total_plans_dict = dict(zip(total_plans_df['company'], total_plans_df['total_plans']))
                 
                 # Process results
+                dosage = RXCUI_TO_DOSAGE.get(str(rxcui), f"NDC: {ndc}")
                 drug_row = {
                     'drug_name': display_name,
                     'ndc': ndc,
+                    'dosage': dosage,
                     'rxcui': rxcui,
                     'companies': {}
                 }

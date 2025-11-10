@@ -187,7 +187,7 @@
             glp1Data.forEach(drug => {
                 const tr = document.createElement('tr');
                 let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
-                rowHTML += `<td class="ndc-dosage sticky-col"><small>${drug.ndc || 'N/A'}</small></td>`;
+                rowHTML += `<td class="ndc-dosage sticky-col"><strong>${drug.dosage || drug.ndc || 'N/A'}</strong></td>`;
                 
                 // Add data for each company
                 companies.forEach(company => {
@@ -279,7 +279,7 @@
             pricingData.forEach(drug => {
                 const tr = document.createElement('tr');
                 let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
-                rowHTML += `<td class="ndc-dosage sticky-col"><small>${drug.ndc || 'N/A'}</small></td>`;
+                rowHTML += `<td class="ndc-dosage sticky-col"><strong>${drug.dosage || drug.ndc || 'N/A'}</strong></td>`;
                 
                 companies.forEach(company => {
                     const companyData = drug.companies[company] || {};
@@ -343,7 +343,7 @@
             memberCostData.forEach(drug => {
                 const tr = document.createElement('tr');
                 let rowHTML = `<td class="drug-name sticky-col">${drug.drug_name}</td>`;
-                rowHTML += `<td class="ndc-dosage sticky-col"><small>${drug.ndc || 'N/A'}</small></td>`;
+                rowHTML += `<td class="ndc-dosage sticky-col"><strong>${drug.dosage || drug.ndc || 'N/A'}</strong></td>`;
                 
                 companies.forEach(company => {
                     const companyData = drug.companies[company] || {};
