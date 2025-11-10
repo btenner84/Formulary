@@ -678,6 +678,12 @@ def load_drug_names():
 
 # Load drug names mapping
 RXCUI_TO_DOSAGE = load_drug_names()
+print(f"📋 Loaded {len(RXCUI_TO_DOSAGE)} RXCUI to dosage mappings")
+if len(RXCUI_TO_DOSAGE) > 0:
+    # Show sample mappings
+    sample_rxcuis = list(RXCUI_TO_DOSAGE.keys())[:5]
+    for rxcui in sample_rxcuis:
+        print(f"   RXCUI {rxcui} -> {RXCUI_TO_DOSAGE[rxcui]}")
 
 # GLP-1 Drug mappings - ALL RXCUIs for each drug (each RXCUI = different dosage/strength)
 # From drug_names.json - each dosage has its own RXCUI
@@ -787,12 +793,21 @@ async def get_glp1_master_table(year: str = "2025"):
             print(f"🔍 {display_name} ({len(rxcuis)} RXCUIs): Found {len(ndcs_df)} NDCs")
             if not ndcs_df.empty:
                 print(f"   NDCs: {', '.join(ndcs_df['ndc'].tolist()[:15])}")  # Show first 15
+                # Show RXCUI and dosage for each NDC
+                for idx, row in ndcs_df.head(10).iterrows():
+                    ndc_val = row['ndc']
+                    rxcui_val = row['rxcui']
+                    dosage_val = RXCUI_TO_DOSAGE.get(str(rxcui_val), f"NDC: {ndc_val}")
+                    print(f"      NDC: {ndc_val} | RXCUI: {rxcui_val} | Dosage: {dosage_val}")
             
             if ndcs_df.empty:
+                print(f"   ⚠️  No NDCs found for {display_name}, skipping")
                 continue
             
             # Process each NDC separately
+            ndc_count = 0
             for _, ndc_row in ndcs_df.iterrows():
+                ndc_count += 1
                 ndc = ndc_row['ndc']
                 rxcui = ndc_row['rxcui']
                 
@@ -933,13 +948,17 @@ async def get_glp1_master_table(year: str = "2025"):
                 dosage = RXCUI_TO_DOSAGE.get(str(rxcui), f"NDC: {ndc}")
                 result['dosage'] = dosage
                 
+                print(f"      ✅ NDC {ndc_count}/{len(ndcs_df)}: {ndc} | RXCUI: {rxcui} | Dosage: {dosage} | Rows: {len(result)}")
+                
                 results.append(result)
             except Exception as query_error:
-                print(f"❌ Query error for {display_name} NDC {ndc} (RXCUI {rxcui}): {query_error}")
+                print(f"      ❌ Query error for NDC {ndc_count}/{len(ndcs_df)}: {ndc} (RXCUI {rxcui}): {query_error}")
                 import traceback
                 traceback.print_exc()
                 # Continue with next drug instead of failing completely
                 continue
+            
+            print(f"   ✅ Finished {display_name}: Processed {ndc_count} NDCs, {len([r for r in results if r is not None])} results so far")
         
         # Combine all drugs
         if not results:
@@ -973,8 +992,15 @@ async def get_glp1_master_table(year: str = "2025"):
         # Pivot: Transform to have one row per drug+NDC combination, with companies as nested objects
         pivoted_data = []
         
-        print(f"📊 Total rows before pivoting: {len(combined)}")
+        print(f"\n📊 Total rows before pivoting: {len(combined)}")
         print(f"📊 Unique drug+NDC combinations: {combined.groupby(['drug_name', 'ndc']).ngroups}")
+        print(f"📊 Unique drug+NDC+dosage combinations: {combined.groupby(['drug_name', 'ndc', 'dosage']).ngroups}")
+        
+        # Show sample of what we're grouping
+        sample_grouped = combined.groupby(['drug_name', 'ndc', 'dosage']).size().head(10)
+        print(f"\n📊 Sample groups (drug+NDC+dosage):")
+        for (drug_name, ndc, dosage), count in sample_grouped.items():
+            print(f"   {drug_name} | {ndc} | {dosage} -> {count} rows")
         
         # Group by drug_name, ndc, and dosage to ensure each NDC gets its own row
         for (drug_name, ndc, dosage), drug_data in combined.groupby(['drug_name', 'ndc', 'dosage']):
@@ -1077,9 +1103,20 @@ async def get_glp1_master_table(year: str = "2025"):
             
             pivoted_data.append(drug_row)
         
-        print(f"✅ Returning {len(pivoted_data)} rows (one per drug+NDC combination)")
-        for row in pivoted_data[:10]:  # Show first 10
-            print(f"   - {row['drug_name']} | {row['dosage']} | NDC: {row['ndc']}")
+        print(f"\n✅ Returning {len(pivoted_data)} rows (one per drug+NDC combination)")
+        
+        # Group by drug to show how many dosages per drug
+        from collections import defaultdict
+        drug_counts = defaultdict(list)
+        for row in pivoted_data:
+            drug_counts[row['drug_name']].append(f"{row['dosage']} (NDC: {row['ndc']})")
+        
+        for drug_name, dosages in drug_counts.items():
+            print(f"   {drug_name}: {len(dosages)} dosages")
+            for dosage_info in dosages[:5]:  # Show first 5
+                print(f"      - {dosage_info}")
+            if len(dosages) > 5:
+                print(f"      ... and {len(dosages) - 5} more")
         
         return pivoted_data
     except Exception as e:
@@ -1390,8 +1427,8 @@ async def get_glp1_member_costs(year: str = "2025"):
                 FROM drug_tiers dt
                 JOIN beneficiary_costs bc ON dt.plan_key = bc.plan_key 
                     AND CAST(bc.tier AS INTEGER) = dt.tier
-                    AND bc.coverage_level = 1
-                    AND bc.days_supply = 30
+                    AND CAST(bc.coverage_level AS INTEGER) = 1
+                    AND CAST(bc.days_supply AS INTEGER) = 30
             )
             SELECT 
                 normalized_org as company,
@@ -1407,7 +1444,10 @@ async def get_glp1_member_costs(year: str = "2025"):
             try:
                 result = conn.execute(query).fetchdf()
                 
+                print(f"   💰 {display_name} NDC {ndc}: Found {len(result)} cost records")
+                
                 if result.empty:
+                    print(f"      ⚠️  No cost data found for {display_name} NDC {ndc}")
                     # Create empty entry
                     dosage = RXCUI_TO_DOSAGE.get(str(rxcui), f"NDC: {ndc}")
                     drug_row = {
@@ -1430,6 +1470,8 @@ async def get_glp1_member_costs(year: str = "2025"):
                         }
                     results.append(drug_row)
                     continue
+                else:
+                    print(f"      ✅ Cost data found: {result.head().to_string()}")
                 
                 # Get total plans per company for this drug
                 total_plans_query = f"""
